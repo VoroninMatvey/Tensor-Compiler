@@ -25,7 +25,7 @@ class Value : public GraphNode {
     enum class data_status { Present, Absent };
     enum class data_type { Int64, Float32 };
 
-    data_type type_;
+    data_type type_ = data_type::Float32;
     std::string name_;
     std::vector<int64_t> shape_;
 
@@ -36,6 +36,9 @@ class Value : public GraphNode {
     std::vector<Op *> consumers_;
 
 }; // <-- class Value
+
+using data_type = Value::data_type;
+using data_status = Value::data_status;
 
 class Add : public Op {};
 class Mul : public Op {};
