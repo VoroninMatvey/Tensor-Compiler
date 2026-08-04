@@ -1,5 +1,2 @@
 build
-*.py
-relu.onnx 
-relu.onnx.data
 third_party/
