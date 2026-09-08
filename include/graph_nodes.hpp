@@ -22,14 +22,14 @@ class Op : public GraphNode {
 
 class Value : public GraphNode {
   public:
-    enum class data_status { Present, Absent };
-    enum class data_type { Int64, Float32 };
+    enum class DataStatus { Present, Absent };
+    enum class DataType { Int64, Float32 };
 
-    data_type type_ = data_type::Float32;
-    std::string name_;
+    DataType type_ = DataType::Float32;
+    std::string name_; // required strictly during import
     std::vector<int64_t> shape_;
 
-    data_status status_ = data_status::Absent;
+    DataStatus status_ = DataStatus::Absent;
     std::vector<std::byte> raw_data_;
 
     Op *producer_ = nullptr;
@@ -37,8 +37,8 @@ class Value : public GraphNode {
 
 }; // <-- class Value
 
-using data_type = Value::data_type;
-using data_status = Value::data_status;
+using DataType = Value::DataType;
+using DataStatus = Value::DataStatus;
 
 class Add : public Op {};
 class Mul : public Op {};
@@ -47,8 +47,8 @@ class MatMul : public Op {};
 
 class Gemm : public Op {
   public:
-    float alpha_ = 1.0;
-    float beta_ = 1.0;
+    float alpha_ = 1.0f;
+    float beta_ = 1.0f;
     bool need_transA_ = false;
     bool need_transB_ = false;
 };

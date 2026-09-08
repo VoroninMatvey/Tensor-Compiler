@@ -16,8 +16,8 @@ class ONNX_Graph {
     std::vector<Value *> outputs;
     std::unordered_map<std::string, Value *> name_to_value_;
 
-    Value *addValue(data_type type, std::string name, std::vector<int64_t> shape,
-                    data_status status) {
+    Value *addValue(DataType type, std::string name, std::vector<int64_t> shape,
+                    DataStatus status) {
         std::unique_ptr<Value> val_uniq = std::make_unique<Value>();
         Value *val_ptr = val_uniq.get();
         val_ptr->type_ = type;
