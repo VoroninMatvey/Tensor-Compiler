@@ -20,12 +20,12 @@ class ONNX_Graph {
                     DataStatus status) {
         std::unique_ptr<Value> val_uniq = std::make_unique<Value>();
         Value *val_ptr = val_uniq.get();
+        val_ptr->shape_ = std::move(shape);
         val_ptr->type_ = type;
         val_ptr->name_ = name;
-        val_ptr->shape_ = shape;
         val_ptr->status_ = status;
 
-        name_to_value_.insert({name, val_ptr});
+        name_to_value_.insert({std::move(name), val_ptr});
         values_.push_back(std::move(val_uniq));
         return val_ptr;
     }
