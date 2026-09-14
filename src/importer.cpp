@@ -257,6 +257,52 @@ std::vector<int64_t> infer_shape_gemm(const std::vector<Value *> &input, const G
     return {M, N};
 }
 
+std::vector<int64_t> infer_shape_conv(const std::vector<Value *> &input, Conv &conv) {
+    const std::vector<int64_t> &shapeX = input[0]->shape_;
+    const std::vector<int64_t> &shapeW = input[1]->shape_;
+
+    if (shapeX.size() < 3)
+        throw std::invalid_argument("Conv: input rank must be at least 3");
+
+    if (shapeX.size() != shapeW.size())
+        throw std::invalid_argument("Conv: inputs has different ranks");
+
+    int dim = shapeX.size() - 2;
+
+    // checking of fill conv field
+    if (conv.kernel_shape_.empty()) {
+        conv.kernel_shape_.assign(shapeW.begin() + 2, shapeW.end());
+    } else {
+        if (conv.kernel_shape_.size() != dim)
+            throw std::invalid_argument("Conv: erroneous reading of shape_kernel");
+    }
+
+    if (conv.strides_.empty()) {
+        conv.strides_.assign(dim, 1);
+    } else {
+        if (conv.strides_.size() != dim)
+            throw std::invalid_argument("Conv: erroneous reading of strides");
+    }
+
+    if (conv.dilations_.empty()) {
+        conv.dilations_.assign(dim, 1);
+    } else {
+        if (conv.dilations_.size() != dim)
+            throw std::invalid_argument("Conv: erroneous reading of dilations");
+    }
+
+    // Then come back here and finish it
+    if (conv.auto_pad_ != "NOTSET")
+        throw std::invalid_argument("This type of auto_pad is not supported: " + conv.auto_pad_);
+
+    if (conv.pads_.empty()) {
+        conv.pads_.assign(2 * dim, 0);
+    } else {
+        if (conv.pads_.size() != 2 * dim)
+            throw std::invalid_argument("Conv: erroneous reading of pads");
+    }
+}
+
 DataType define_type(int32_t elem_type, std::string_view name, std::string_view context) {
     switch (elem_type) {
     case ::onnx::TensorProto::FLOAT:
