@@ -18,6 +18,10 @@ class ONNX_Graph {
 
     Value *addValue(DataType type, std::string name, std::vector<int64_t> shape,
                     DataStatus status) {
+
+        if (name_to_value_.contains(name))
+            throw std::runtime_error("Duplicate value name: " + name);
+
         std::unique_ptr<Value> val_uniq = std::make_unique<Value>();
         Value *val_ptr = val_uniq.get();
         val_ptr->shape_ = std::move(shape);

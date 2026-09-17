@@ -2,6 +2,7 @@
 #include "graph.hpp"
 #include "graph_nodes.hpp"
 #include "onnx.pb.h"
+#include "shape_inference.hpp"
 #include <algorithm>
 #include <cstring>
 #include <fstream>
@@ -18,6 +19,9 @@ DataType define_type(int32_t elem_type, std::string_view name, std::string_view 
 std::vector<int64_t> extract_shape(const ::onnx::TensorShapeProto &shape_proto);
 Value *create_value_from_value_info(const ::onnx::ValueInfoProto &value_info_proto,
                                     ONNX_Graph &my_graph, std::string_view context);
+
+void fill_gemm_attr(const ::onnx::NodeProto &node_proto, Gemm &gemm);
+void fill_conv_attr(const ::onnx::NodeProto &node_proto, Conv &conv);
 
 void importInitializers(const ::onnx::GraphProto &onnx_graph, ONNX_Graph &my_graph) {
     for (const auto &tensor_proto : onnx_graph.initializer()) {
@@ -69,37 +73,55 @@ void importNodes(const ::onnx::GraphProto &onnx_graph, ONNX_Graph &my_graph) {
 
         if (op_type == "Add") {
             op_ptr = my_graph.addOp<Add>();
+            op_ptr->inputs_ = std::move(input);
+            out_shape = infer_shape_add_mul(op_ptr->inputs_, "Add");
         } else if (op_type == "Mul") {
             op_ptr = my_graph.addOp<Mul>();
+            op_ptr->inputs_ = std::move(input);
+            out_shape = infer_shape_add_mul(op_ptr->inputs_, "Mul");
         } else if (op_type == "Relu") {
             op_ptr = my_graph.addOp<Relu>();
+            op_ptr->inputs_ = std::move(input);
+            out_shape = infer_shape_relu(op_ptr->inputs_);
         } else if (op_type == "MatMul") {
             op_ptr = my_graph.addOp<MatMul>();
+            op_ptr->inputs_ = std::move(input);
+            out_shape = infer_shape_matmul(op_ptr->inputs_);
         } else if (op_type == "Gemm") {
             op_ptr = my_graph.addOp<Gemm>();
+            op_ptr->inputs_ = std::move(input);
+            Gemm *gemm_ptr = static_cast<Gemm *>(op_ptr);
+            fill_gemm_attr(node_proto, *gemm_ptr);
+            out_shape = infer_shape_gemm(gemm_ptr->inputs_, *gemm_ptr);
         } else if (op_type == "Conv") {
             op_ptr = my_graph.addOp<Conv>();
+            op_ptr->inputs_ = std::move(input);
+            Conv *conv_ptr = static_cast<Conv *>(op_ptr);
+            fill_conv_attr(node_proto, *conv_ptr);
+            out_shape = infer_shape_conv(conv_ptr->inputs_, *conv_ptr);
         } else {
             throw std::runtime_error("Unsupported type: " + op_type);
         }
 
-        /*for (const auto &output_elem : node_proto.output()) {
-            auto it = my_graph.name_to_value_.find(output_elem);
-            if (it != my_graph.name_to_value_.end()) {
-                op_ptr->outputs_.push_back(it->second);
-                it->second->producer_ = op_ptr;
-            }
-        }*/
-    }
-}
-
-void print_attr(const ::onnx::GraphProto &onnx_graph, ONNX_Graph &my_graph) {
-    for (const auto &node_proto : onnx_graph.node()) {
-        for (const auto &node_attr : node_proto.attribute()) {
-            std::cout << "------------------------------------------------------" << std::endl;
-            std::cout << node_attr.name() << std::endl;
-            std::cout << "------------------------------------------------------" << std::endl;
+        for (auto &input_elem : op_ptr->inputs_) {
+            input_elem->consumers_.push_back(op_ptr);
         }
+
+        DataType type = op_ptr->inputs_[0]->type_; // only for my specific 6 operators
+        const std::string &tensor_name = node_proto.output()[0];
+
+        auto it_out = my_graph.name_to_value_.find(tensor_name);
+        Value *val_out_ptr = nullptr;
+        if (it_out != my_graph.name_to_value_.end()) {
+            val_out_ptr = it_out->second;
+            if (val_out_ptr->producer_ != nullptr)
+                throw std::runtime_error("Value " + tensor_name + " is produced twice");
+        } else {
+            val_out_ptr = my_graph.addValue(type, tensor_name, out_shape, DataStatus::Absent);
+        }
+
+        val_out_ptr->producer_ = op_ptr;
+        op_ptr->outputs_.push_back(val_out_ptr);
     }
 }
 
@@ -135,171 +157,6 @@ void fill_conv_attr(const ::onnx::NodeProto &node_proto, Conv &conv) {
         } else if (attr_name == "group") {
             conv.group_ = node_attr.i();
         }
-    }
-}
-
-int64_t broadcast(int64_t num1, int64_t num2, std::string_view op_type) {
-    if (num1 == num2) {
-        return num1;
-    } else if (num1 == 1) {
-        return num2;
-    } else if (num2 == 1) {
-        return num1;
-    } else if (num1 == -1 || num2 == -1) {
-        return -1;
-    }
-
-    throw std::invalid_argument("invalid argument of operation: " + std::string(op_type));
-}
-
-std::vector<int64_t> broadcast_shapes(const std::vector<int64_t> &shape1,
-                                      const std::vector<int64_t> &shape2, std::string_view op_type,
-                                      int offset = 0) {
-    int rank1 = shape1.size() - offset;
-    int rank2 = shape2.size() - offset;
-    int out_rank = std::max(rank1, rank2);
-    std::vector<int64_t> op_shape(out_rank);
-
-    for (int i = 0; i < out_rank; ++i) {
-        int64_t num1 = (i < rank1) ? shape1[rank1 - 1 - i] : 1;
-        int64_t num2 = (i < rank2) ? shape2[rank2 - 1 - i] : 1;
-
-        op_shape[out_rank - 1 - i] = broadcast(num1, num2, op_type);
-    }
-
-    return op_shape;
-}
-
-std::vector<int64_t> infer_shape_relu(const std::vector<Value *> &input) {
-    return input[0]->shape_;
-}
-
-std::vector<int64_t> infer_shape_add_mul(const std::vector<Value *> &input,
-                                         std::string_view op_type) {
-    const std::vector<int64_t> &shape1 = input[0]->shape_;
-    const std::vector<int64_t> &shape2 = input[1]->shape_;
-
-    return broadcast_shapes(shape1, shape2, op_type);
-}
-
-std::vector<int64_t> infer_shape_matmul(const std::vector<Value *> &input) {
-    std::vector<int64_t> shapeA = input[0]->shape_;
-    std::vector<int64_t> shapeB = input[1]->shape_;
-
-    if (shapeA.empty() || shapeB.empty())
-        throw std::invalid_argument("MatMul does not accept scalar inputs");
-
-    bool A_was_vector = (shapeA.size() == 1);
-    if (A_was_vector)
-        shapeA.insert(shapeA.begin(), 1);
-
-    bool B_was_vector = (shapeB.size() == 1);
-    if (B_was_vector)
-        shapeB.push_back(1);
-
-    int rankA = shapeA.size();
-    int rankB = shapeB.size();
-
-    int64_t M = shapeA[rankA - 2];
-    int64_t N = shapeB[rankB - 1];
-    int64_t K_A = shapeA[rankA - 1];
-    int64_t K_B = shapeB[rankB - 2];
-
-    if (K_A != K_B && K_A != -1 && K_B != -1)
-        throw std::invalid_argument("MatMul: incompatible inner dimensions " + std::to_string(K_A) +
-                                    " and " + std::to_string(K_B));
-
-    int batch_rank = std::max(rankA, rankB) - 2;
-    std::vector<int64_t> op_shape = broadcast_shapes(shapeA, shapeB, "MatMul", 2);
-
-    if (!A_was_vector)
-        op_shape.push_back(M);
-    if (!B_was_vector)
-        op_shape.push_back(N);
-
-    return op_shape;
-}
-
-void read_gemm_input_dims(int64_t &first, int64_t &second, const std::vector<int64_t> &shape,
-                          bool need_trans) {
-    if (!need_trans) {
-        first = shape[0];
-        second = shape[1];
-    } else {
-        first = shape[1];
-        second = shape[0];
-    }
-}
-
-std::vector<int64_t> infer_shape_gemm(const std::vector<Value *> &input, const Gemm &gemm) {
-    const std::vector<int64_t> &shapeA = input[0]->shape_;
-    const std::vector<int64_t> &shapeB = input[1]->shape_;
-
-    if (shapeA.size() != 2 || shapeB.size() != 2)
-        throw std::invalid_argument("Invalid input form for gemm operator");
-
-    int64_t M, K_A, K_B, N;
-    read_gemm_input_dims(M, K_A, shapeA, gemm.need_transA_);
-    read_gemm_input_dims(K_B, N, shapeB, gemm.need_transB_);
-
-    if (K_A != K_B && K_A != -1 && K_B != -1)
-        throw std::invalid_argument("Gemm: incompatible inner dimensions " + std::to_string(K_A) +
-                                    " and " + std::to_string(K_B));
-
-    if (input.size() == 3) {
-        const std::vector<int64_t> &shapeC = input[2]->shape_;
-        if (shapeC.size() > 2)
-            throw std::invalid_argument("Gemm: C has rank greater than 2");
-
-        broadcast_shapes({M, N}, shapeC, "Gemm"); // to check compatibility
-    }
-
-    return {M, N};
-}
-
-std::vector<int64_t> infer_shape_conv(const std::vector<Value *> &input, Conv &conv) {
-    const std::vector<int64_t> &shapeX = input[0]->shape_;
-    const std::vector<int64_t> &shapeW = input[1]->shape_;
-
-    if (shapeX.size() < 3)
-        throw std::invalid_argument("Conv: input rank must be at least 3");
-
-    if (shapeX.size() != shapeW.size())
-        throw std::invalid_argument("Conv: inputs has different ranks");
-
-    int dim = shapeX.size() - 2;
-
-    // checking of fill conv field
-    if (conv.kernel_shape_.empty()) {
-        conv.kernel_shape_.assign(shapeW.begin() + 2, shapeW.end());
-    } else {
-        if (conv.kernel_shape_.size() != dim)
-            throw std::invalid_argument("Conv: erroneous reading of shape_kernel");
-    }
-
-    if (conv.strides_.empty()) {
-        conv.strides_.assign(dim, 1);
-    } else {
-        if (conv.strides_.size() != dim)
-            throw std::invalid_argument("Conv: erroneous reading of strides");
-    }
-
-    if (conv.dilations_.empty()) {
-        conv.dilations_.assign(dim, 1);
-    } else {
-        if (conv.dilations_.size() != dim)
-            throw std::invalid_argument("Conv: erroneous reading of dilations");
-    }
-
-    // Then come back here and finish it
-    if (conv.auto_pad_ != "NOTSET")
-        throw std::invalid_argument("This type of auto_pad is not supported: " + conv.auto_pad_);
-
-    if (conv.pads_.empty()) {
-        conv.pads_.assign(2 * dim, 0);
-    } else {
-        if (conv.pads_.size() != 2 * dim)
-            throw std::invalid_argument("Conv: erroneous reading of pads");
     }
 }
 
@@ -358,7 +215,7 @@ ONNX_Graph importer(const std::string &path) {
 
     importInitializers(onnx_graph, my_graph);
     importInputOutput(onnx_graph, my_graph);
-    print_attr(onnx_graph, my_graph);
+    importNodes(onnx_graph, my_graph);
 
     return my_graph;
 }
