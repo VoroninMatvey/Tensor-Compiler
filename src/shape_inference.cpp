@@ -1,6 +1,9 @@
+#include "shape_inference.hpp"
 #include "graph_nodes.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -35,7 +38,7 @@ int64_t broadcast(int64_t num1, int64_t num2, std::string_view op_type) {
 
 std::vector<int64_t> broadcast_shapes(const std::vector<int64_t> &shape1,
                                       const std::vector<int64_t> &shape2, std::string_view op_type,
-                                      int offset = 0) {
+                                      int offset) {
     int rank1 = shape1.size() - offset;
     int rank2 = shape2.size() - offset;
     int out_rank = std::max(rank1, rank2);
@@ -93,7 +96,6 @@ std::vector<int64_t> infer_shape_matmul(const std::vector<Value *> &input) {
         throw std::invalid_argument("MatMul: incompatible inner dimensions " + std::to_string(K_A) +
                                     " and " + std::to_string(K_B));
 
-    int batch_rank = std::max(rankA, rankB) - 2;
     std::vector<int64_t> op_shape = broadcast_shapes(shapeA, shapeB, "MatMul", 2);
 
     if (!A_was_vector)
