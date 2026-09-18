@@ -17,6 +17,7 @@ class Op : public GraphNode {
   public:
     std::vector<Value *> inputs_;
     std::vector<Value *> outputs_;
+    std::string op_type_;
 
 }; // <-- class Op
 

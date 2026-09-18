@@ -150,28 +150,34 @@ Op *create_op(const ::onnx::NodeProto &node_proto, std::vector<Value *> input, O
 
     if (op_type == "Add") {
         op_ptr = my_graph.addOp<Add>();
+        op_ptr->op_type_ = op_type;
         op_ptr->inputs_ = std::move(input);
         out_shape = infer_shape_add_mul(op_ptr->inputs_, "Add");
     } else if (op_type == "Mul") {
         op_ptr = my_graph.addOp<Mul>();
+        op_ptr->op_type_ = op_type;
         op_ptr->inputs_ = std::move(input);
         out_shape = infer_shape_add_mul(op_ptr->inputs_, "Mul");
     } else if (op_type == "Relu") {
         op_ptr = my_graph.addOp<Relu>();
+        op_ptr->op_type_ = op_type;
         op_ptr->inputs_ = std::move(input);
         out_shape = infer_shape_relu(op_ptr->inputs_);
     } else if (op_type == "MatMul") {
         op_ptr = my_graph.addOp<MatMul>();
+        op_ptr->op_type_ = op_type;
         op_ptr->inputs_ = std::move(input);
         out_shape = infer_shape_matmul(op_ptr->inputs_);
     } else if (op_type == "Gemm") {
         Gemm *gemm_ptr = my_graph.addOp<Gemm>();
+        gemm_ptr->op_type_ = op_type;
         gemm_ptr->inputs_ = std::move(input);
         fill_gemm_attr(node_proto, *gemm_ptr);
         out_shape = infer_shape_gemm(gemm_ptr->inputs_, *gemm_ptr);
         op_ptr = gemm_ptr;
     } else if (op_type == "Conv") {
         Conv *conv_ptr = my_graph.addOp<Conv>();
+        conv_ptr->op_type_ = op_type;
         conv_ptr->inputs_ = std::move(input);
         fill_conv_attr(node_proto, *conv_ptr);
         out_shape = infer_shape_conv(conv_ptr->inputs_, *conv_ptr);
