@@ -1,6 +1,6 @@
+#include "graph_builder.hpp"
 #include <cstdint>
 #include <format>
-#include <graph_builder.hpp>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -24,28 +24,49 @@ constexpr TensorStyle Other = {"#E3F2FD", "#1565C0"};
 
 } // namespace TensorColors
 
-void printOp(const Op *op_ptr, std::string &dot, int id);
+void printOp(std::string &dot, std::string_view op_name);
+void printTensor(const Value *val_ptr, std::string &dot, const TensorStyle &style);
+void printEdges(const Op *op_ptr, std::string &dot, std::string_view op_name,
+                const std::string &input_str);
+
+void print_ops(const ONNX_Graph &my_graph, std::string &dot);
+void print_values(const ONNX_Graph &my_graph, std::string &dot,
+                  std::unordered_set<std::string> &inserted_value);
+
+std::unordered_map<std::string, int> init_op_id();
 std::string shape_to_string(const std::vector<int64_t> &shape);
+std::string op_input_to_string(const std::vector<Value *> &input, std::string_view op_name);
 
 } // namespace
 
 std::string build_dot(const ONNX_Graph &my_graph, const std::string &fontname,
                       const std::string &edge_color, const double penwidth) {
 
-    std::unordered_set<std::string> inserted_value;
     std::string dot;
+    std::unordered_set<std::string> inserted_value;
 
     // clang-format off
     dot += std::format(R"DOT(
-    strict digraph ONNX_graph {
+    strict digraph ONNX_graph {{
     
-        node = [fontname = "{}"]; 
-        edge = [color = "{}", pendwith = {}];  
+        node [fontname = "{}"]; 
+        edge [color = "{}", penwidth = {}];  
 
     )DOT", fontname, edge_color, penwidth);
     // clang-format on
 
-    //--------------------- separate function
+    print_values(my_graph, dot, inserted_value);
+    print_ops(my_graph, dot);
+    dot += "\n\t}";
+
+    return dot;
+}
+
+namespace {
+
+void print_values(const ONNX_Graph &my_graph, std::string &dot,
+                  std::unordered_set<std::string> &inserted_value) {
+
     for (const auto *input_ptr : my_graph.inputs) {
         inserted_value.insert(input_ptr->name_);
         printTensor(input_ptr, dot, TensorColors::Input);
@@ -66,60 +87,65 @@ std::string build_dot(const ONNX_Graph &my_graph, const std::string &fontname,
                                                                         : TensorColors::Other;
         printTensor(value_ptr, dot, style);
     }
-    //---------------------
-
-    std::unordered_map<std::string, int> op_id_map = init_op_id();
-    for (const auto &op : my_graph.ops_) {
-        const Op *op_ptr = op.get();
-        int op_id = op_id_map[op->op_type_]++;
-        std::string op_name = op->op_type_ + "_" + std::to_string(op_id);
-
-        printOp(dot, op_name);
-    }
-
-    return "ada";
 }
 
-namespace {
+void print_ops(const ONNX_Graph &my_graph, std::string &dot) {
+    std::unordered_map<std::string, int> op_id_map = init_op_id();
 
-std::unordered_map<std::string, int> init_op_id() {
-    std::vector<std::string> vec = {"Add", "Mul", "Relu", "MatMul", "Conv", "Gemm"};
-    std::unordered_map<std::string, int> op_id_map;
+    for (const auto &op : my_graph.ops_) {
+        int op_type_id = op_id_map[op->op_type_]++;
+        std::string op_name = op->op_type_ + "_" + std::to_string(op_type_id);
 
-    for (int i = 0; i < 5; ++i) {
-        op_id_map.insert({vec[i], 0});
+        std::string input_str = op_input_to_string(op->inputs_, op_name);
+        printOp(dot, op_name);
+        printEdges(op.get(), dot, op_name, input_str);
     }
-
-    return op_id_map;
 }
 
 // clang-format off
 void printOp(std::string &dot, std::string_view op_name) {
-    dot += std::format(R"DOT(
-        node [shape = ellipse, style = solid]
-        "{}"
-    )DOT", op_name);
+    dot += std::format("\"{}\" [shape=ellipse, style=solid];\n", op_name);
 }
-
 
 void printTensor(const Value* val_ptr, std::string& dot, const TensorStyle& style) {
     dot += std::format(R"DOT(
-        "{1}" [shape = none, label=<
-            <TABLE BORDER = "1" CELLBORDER = "1" CELLSPACING = "0" CELLPADDING = "4" BGCOLOR = "{2}" COLOR = "{3}">
-                <TR><TD HEIGHT="40">{1}</TD></TR>
-                <TR><TD HEIGHT="20">{4}</TD></TR>
+        "{0}" [shape = none, label=<
+            <TABLE BORDER = "1" CELLBORDER = "1" CELLSPACING = "0" CELLPADDING = "4" BGCOLOR = "{1}" COLOR = "{2}">
+                <TR><TD HEIGHT="40">{0}</TD></TR>
+                <TR><TD HEIGHT="20">{3}</TD></TR>
             </TABLE>
         >];
     )DOT", val_ptr->name_, style.bg_color_, style.color_, shape_to_string(val_ptr->shape_));
 }
 
-void printEdges(const Op* op_ptr, std::string& dot, std::string_view op_name) {
-    dot += std::format(R"DOT(
-        "{}" -> "{}";
-        // inputs of op
-    )DOT", op_name, op_ptr->outputs_[1]->name_);
+void printEdges(const Op* op_ptr, std::string& dot, std::string_view op_name, const std::string& input_str) {
+    dot += "\n\t\t// inputs of op:\n";
+    dot += input_str;
+    dot += "\t\t// outputs of op:\n";
+    dot += std::format("\t\t\"{}\" -> \"{}\";\n", op_name, op_ptr->outputs_[0]->name_);
 }
-// clang-format on
+
+std::string op_input_to_string(const std::vector<Value *>& input, std::string_view op_name) {
+    std::string op_input;
+    for (const auto *input_ptr : input) {
+        op_input += std::format("\t\t\"{}\" -> \"{}\";\n", input_ptr->name_, op_name);
+    }
+    
+    op_input += "\n";
+    return op_input;
+}
+//clang-format on
+
+std::unordered_map<std::string, int> init_op_id() {
+    std::vector<std::string> vec = {"Add", "Mul", "Relu", "MatMul", "Conv", "Gemm"};
+    std::unordered_map<std::string, int> op_id_map;
+
+    for (int i = 0; i < 6; ++i) {
+        op_id_map.insert({vec[i], 0});
+    }
+
+    return op_id_map;
+}
 
 std::string shape_to_string(const std::vector<int64_t> &shape) {
     std::string shape_str;
