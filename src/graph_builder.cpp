@@ -102,6 +102,7 @@ void print_ops(const ONNX_Graph &my_graph, std::string &dot) {
     // operator op_id_map[op_type] create pair with default key = 0
     std::unordered_map<std::string, int> op_id_map;
 
+    dot += "\n";
     for (const auto &op : my_graph.ops_) {
         int op_type_id = op_id_map[op->op_type_]++;
         std::string op_name = op->op_type_ + "_" + std::to_string(op_type_id);
@@ -114,7 +115,7 @@ void print_ops(const ONNX_Graph &my_graph, std::string &dot) {
 
 // clang-format off
 void printOp(std::string &dot, std::string_view op_name) {
-    dot += std::format("\"{}\" [shape=ellipse, style=solid];\n", op_name);
+    dot += std::format("\t\"{}\" [shape=ellipse, style=solid];\n", op_name);
 }
 
 void printTensor(const Value* val_ptr, std::string& dot, const TensorStyle& style) {
@@ -133,6 +134,7 @@ void printEdges(const Op* op_ptr, std::string& dot, std::string_view op_name, co
     dot += input_str;
     dot += "\t\t// outputs of op:\n";
     dot += std::format("\t\t\"{}\" -> \"{}\";\n", op_name, op_ptr->outputs_[0]->name_);
+    dot += "\n";
 }
 
 std::string op_input_to_string(const std::vector<Value *>& input, std::string_view op_name) {

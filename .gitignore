@@ -1,2 +1,4 @@
 build
 third_party/
+.vscode/
+data/dot_models
