@@ -1,6 +1,9 @@
 #include "graph_builder.hpp"
 #include <cstdint>
+#include <filesystem>
 #include <format>
+#include <fstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -30,10 +33,8 @@ void printEdges(const Op *op_ptr, std::string &dot, std::string_view op_name,
                 const std::string &input_str);
 
 void print_ops(const ONNX_Graph &my_graph, std::string &dot);
-void print_values(const ONNX_Graph &my_graph, std::string &dot,
-                  std::unordered_set<std::string> &inserted_value);
+void print_values(const ONNX_Graph &my_graph, std::string &dot);
 
-std::unordered_map<std::string, int> init_op_id();
 std::string shape_to_string(const std::vector<int64_t> &shape);
 std::string op_input_to_string(const std::vector<Value *> &input, std::string_view op_name);
 
@@ -43,7 +44,6 @@ std::string build_dot(const ONNX_Graph &my_graph, const std::string &fontname,
                       const std::string &edge_color, const double penwidth) {
 
     std::string dot;
-    std::unordered_set<std::string> inserted_value;
 
     // clang-format off
     dot += std::format(R"DOT(
@@ -55,17 +55,26 @@ std::string build_dot(const ONNX_Graph &my_graph, const std::string &fontname,
     )DOT", fontname, edge_color, penwidth);
     // clang-format on
 
-    print_values(my_graph, dot, inserted_value);
+    print_values(my_graph, dot);
     print_ops(my_graph, dot);
     dot += "\n\t}";
 
     return dot;
 }
 
+void render_graphviz(const std::string &dot, const std::filesystem::path &file_path) {
+    std::ofstream file(file_path);
+    if (!file) {
+        throw std::runtime_error("Cannot open file: " + file_path.string());
+    }
+
+    file << dot;
+}
+
 namespace {
 
-void print_values(const ONNX_Graph &my_graph, std::string &dot,
-                  std::unordered_set<std::string> &inserted_value) {
+void print_values(const ONNX_Graph &my_graph, std::string &dot) {
+    std::unordered_set<std::string> inserted_value;
 
     for (const auto *input_ptr : my_graph.inputs) {
         inserted_value.insert(input_ptr->name_);
@@ -90,7 +99,8 @@ void print_values(const ONNX_Graph &my_graph, std::string &dot,
 }
 
 void print_ops(const ONNX_Graph &my_graph, std::string &dot) {
-    std::unordered_map<std::string, int> op_id_map = init_op_id();
+    // operator op_id_map[op_type] create pair with default key = 0
+    std::unordered_map<std::string, int> op_id_map;
 
     for (const auto &op : my_graph.ops_) {
         int op_type_id = op_id_map[op->op_type_]++;
@@ -135,17 +145,6 @@ std::string op_input_to_string(const std::vector<Value *>& input, std::string_vi
     return op_input;
 }
 //clang-format on
-
-std::unordered_map<std::string, int> init_op_id() {
-    std::vector<std::string> vec = {"Add", "Mul", "Relu", "MatMul", "Conv", "Gemm"};
-    std::unordered_map<std::string, int> op_id_map;
-
-    for (int i = 0; i < 6; ++i) {
-        op_id_map.insert({vec[i], 0});
-    }
-
-    return op_id_map;
-}
 
 std::string shape_to_string(const std::vector<int64_t> &shape) {
     std::string shape_str;
