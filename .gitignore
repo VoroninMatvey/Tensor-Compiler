@@ -1,4 +1,5 @@
 build
 third_party/
 .vscode/
+!.vscode/settings.json
 data/dot_models

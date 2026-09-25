@@ -29,8 +29,10 @@ int64_t broadcast(int64_t num1, int64_t num2, std::string_view op_type) {
         return num2;
     } else if (num2 == 1) {
         return num1;
-    } else if (num1 == -1 || num2 == -1) {
-        return -1;
+    } else if (num1 == -1) {
+        return num2;
+    } else if (num2 == -1) {
+        return num1;
     }
 
     throw std::invalid_argument("invalid argument of operation: " + std::string(op_type));
