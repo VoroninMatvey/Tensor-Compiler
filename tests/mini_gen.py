@@ -2,7 +2,9 @@ import os
 import torch
 import torch.nn as nn
 
-out_dir = os.path.join(os.path.dirname(__file__), "specific_operations")
+out_dir = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "data", "specific_operations")
+)
 os.makedirs(out_dir, exist_ok=True)
 
 

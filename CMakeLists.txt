@@ -23,4 +23,5 @@ add_executable(${PROJECT_NAME} ${SRC})
 target_link_libraries(${PROJECT_NAME} PRIVATE tc_frontend)
 target_compile_definitions(${PROJECT_NAME} PRIVATE ${PROJECT_ROOT_DEF})
 
+enable_testing()
 add_subdirectory(tests)
