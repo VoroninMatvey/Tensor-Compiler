@@ -14,10 +14,10 @@ fs::path get_path(const std::string &file_name) {
     return onnx_dir / file_name;
 }
 
-/*TEST(Importer, FileNotFound) {
-    fs::path add_file = get_path("Unknown.onnx");
-    EXPECT_THROW(Labs::importer(add_file), std::invalid_argument);
-}*/
+TEST(Importer, FileNotFound) {
+    fs::path error_file = get_path("error.onnx");
+    EXPECT_THROW(Labs::importer(error_file), std::runtime_error);
+}
 
 TEST(ImporterSingleNode, Add) {
     fs::path add_file = get_path("add.onnx");
@@ -32,8 +32,8 @@ TEST(ImporterSingleNode, Add) {
 }
 
 TEST(ImporterSingleNode, Relu) {
-    fs::path add_file = get_path("relu.onnx");
-    Labs::ONNX_Graph relu_graph = Labs::importer(add_file);
+    fs::path relu_file = get_path("relu.onnx");
+    Labs::ONNX_Graph relu_graph = Labs::importer(relu_file);
 
     EXPECT_EQ(relu_graph.ops_.size(), 1);
     EXPECT_EQ(relu_graph.ops_[0]->op_type_, "Relu");
@@ -44,8 +44,8 @@ TEST(ImporterSingleNode, Relu) {
 }
 
 TEST(ImporterSingleNode, Mul) {
-    fs::path add_file = get_path("mul.onnx");
-    Labs::ONNX_Graph mul_graph = Labs::importer(add_file);
+    fs::path mul_file = get_path("mul.onnx");
+    Labs::ONNX_Graph mul_graph = Labs::importer(mul_file);
 
     EXPECT_EQ(mul_graph.ops_.size(), 1);
     EXPECT_EQ(mul_graph.ops_[0]->op_type_, "Mul");
@@ -56,8 +56,8 @@ TEST(ImporterSingleNode, Mul) {
 }
 
 TEST(ImporterSingleNode, MatMul) {
-    fs::path add_file = get_path("matmul.onnx");
-    Labs::ONNX_Graph matmul_graph = Labs::importer(add_file);
+    fs::path matmul_file = get_path("matmul.onnx");
+    Labs::ONNX_Graph matmul_graph = Labs::importer(matmul_file);
 
     EXPECT_EQ(matmul_graph.ops_.size(), 1);
     EXPECT_EQ(matmul_graph.ops_[0]->op_type_, "MatMul");
@@ -68,8 +68,8 @@ TEST(ImporterSingleNode, MatMul) {
 }
 
 TEST(ImporterSingleNode, Gemm) {
-    fs::path add_file = get_path("gemm.onnx");
-    Labs::ONNX_Graph gemm_graph = Labs::importer(add_file);
+    fs::path gemm_file = get_path("gemm.onnx");
+    Labs::ONNX_Graph gemm_graph = Labs::importer(gemm_file);
 
     ASSERT_EQ(gemm_graph.ops_.size(), 1);
     ASSERT_EQ(gemm_graph.ops_[0]->op_type_, "Gemm");
@@ -95,8 +95,8 @@ TEST(ImporterSingleNode, Gemm) {
 }
 
 TEST(ImporterSingleNode, Conv) {
-    fs::path add_file = get_path("conv.onnx");
-    Labs::ONNX_Graph conv_graph = Labs::importer(add_file);
+    fs::path conv_file = get_path("conv.onnx");
+    Labs::ONNX_Graph conv_graph = Labs::importer(conv_file);
 
     ASSERT_EQ(conv_graph.ops_.size(), 1);
     ASSERT_EQ(conv_graph.ops_[0]->op_type_, "Conv");
@@ -229,7 +229,7 @@ TEST(ImporterUniversalGraph, Attributes) {
 
     Labs::Gemm *context_out_prod =
         static_cast<Labs::Gemm *>(big_graph.name_to_value_.at("context_out")->producer_);
-    EXPECT_EQ(context_out_prod->need_transA_, true);
+    EXPECT_TRUE(context_out_prod->need_transA_);
 }
 
 TEST(ImporterUniversalGraph, Invariants) {
@@ -265,6 +265,6 @@ TEST(ImporterUniversalGraph, Invariants) {
             if (prod_op_num >= op_num)
                 inputs_exist = false;
         }
-        EXPECT_EQ(inputs_exist, true);
+        EXPECT_TRUE(inputs_exist);
     }
 }
