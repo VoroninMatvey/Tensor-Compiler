@@ -1,6 +1,6 @@
 build
 third_party/
-.vscode/
+.vscode/*
 !.vscode/settings.json
 data/dot_models
 Testing/

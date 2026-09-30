@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 
 out_dir = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "data", "specific_operations")
+    os.path.join(os.path.dirname(__file__), "..", "..", "data", "specific_operations")
 )
 os.makedirs(out_dir, exist_ok=True)
 
@@ -160,4 +160,4 @@ def build_big_graph(path):
     print(os.path.basename(path), f"done ({len(nodes)} nodes)")
 
 
-build_big_graph(os.path.join(out_dir, "big_graph.onnx"))
+build_big_graph(os.path.join(out_dir, "universal_graph.onnx"))
