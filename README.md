@@ -36,5 +36,5 @@ Run test:
 ```
 ctest --test-dir build --output-on-failure
 ```
-
+![The graph did not load](data/readme_md_picture/graph.png)
 

@@ -4,3 +4,4 @@ third_party/
 !.vscode/settings.json
 data/dot_models
 Testing/
+*:Zone.Identifier

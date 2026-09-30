@@ -161,3 +161,49 @@ def build_big_graph(path):
 
 
 build_big_graph(os.path.join(out_dir, "universal_graph.onnx"))
+#-----------------------------------------------------------------------------------------
+def build_readme_graph(path):
+    rng = np.random.default_rng(1)
+    nodes = []
+    initializers = []
+
+    def weight(name, shape):
+        arr = rng.standard_normal(shape).astype(np.float32)
+        initializers.append(numpy_helper.from_array(arr, name))
+        return name
+
+    def node(op_type, inputs, output, **attrs):
+        nodes.append(helper.make_node(op_type, inputs, [output], name=output, **attrs))
+        return output
+
+    a = node("Conv", ["x", weight("a.w", [4, 3, 1, 1])], "conv_1x1",
+             kernel_shape=[1, 1])                                            # [1, 4, 8, 8]
+    a = node("Relu", [a], "relu_a")
+
+    b = node("Conv", ["x", weight("b.w", [4, 3, 3, 3])], "conv_3x3",
+             kernel_shape=[3, 3], pads=[1, 1, 1, 1])                         # [1, 4, 8, 8]
+    b = node("Relu", [b], "relu_b")
+
+    c = node("Conv", ["x", weight("c.w", [4, 3, 3, 3])], "conv_dilated",
+             kernel_shape=[3, 3], pads=[2, 2, 2, 2], dilations=[2, 2])       # [1, 4, 8, 8]
+    c = node("Relu", [c], "relu_c")
+
+    y = node("Add", [a, b], "sum_ab")
+    y = node("Add", [y, c], "sum_abc")
+    nodes.append(helper.make_node("Mul", [y, weight("scale", [1, 4, 1, 1])], ["y"], name="y"))
+
+    graph = helper.make_graph(
+        nodes,
+        "readme_graph",
+        inputs=[helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 3, 8, 8])],
+        outputs=[helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 4, 8, 8])],
+        initializer=initializers,
+    )
+
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+    onnx.checker.check_model(model, full_check=True)
+    onnx.save(model, path)
+    print(os.path.basename(path), f"done ({len(nodes)} nodes)")
+
+
+build_readme_graph(os.path.join(out_dir, "readme_md.onnx"))
