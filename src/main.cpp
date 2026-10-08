@@ -1,6 +1,14 @@
 #include "graph.hpp"
 #include "graph_builder.hpp"
 #include "importer.hpp"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/OwningOpRef.h"
+#include "mlir_gen.hpp"
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -38,6 +46,16 @@ int main(int argc, char *argv[]) {
 
     try {
         Labs::ONNX_Graph my_graph = Labs::importer(argv[1]);
+
+        //----------------------------
+        mlir::MLIRContext context;
+        context.getOrLoadDialect<mlir::func::FuncDialect>();
+        context.getOrLoadDialect<mlir::arith::ArithDialect>();
+        context.getOrLoadDialect<mlir::linalg::LinalgDialect>();
+        context.getOrLoadDialect<mlir::tensor::TensorDialect>();
+        mlir::OwningOpRef<mlir::ModuleOp> module = Labs::mlirGen(context, my_graph);
+        module->dump();
+        //----------------------------
 
         if (has_draw_flag(argc, argv)) {
             draw_graph(my_graph, prepare_dot_path(argv[1]));
