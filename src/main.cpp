@@ -49,10 +49,8 @@ int main(int argc, char *argv[]) {
 
         //----------------------------
         mlir::MLIRContext context;
-        context.getOrLoadDialect<mlir::func::FuncDialect>();
-        context.getOrLoadDialect<mlir::arith::ArithDialect>();
-        context.getOrLoadDialect<mlir::linalg::LinalgDialect>();
-        context.getOrLoadDialect<mlir::tensor::TensorDialect>();
+        context.loadDialect<mlir::func::FuncDialect, mlir::arith::ArithDialect,
+                            mlir::linalg::LinalgDialect, mlir::tensor::TensorDialect>();
         mlir::OwningOpRef<mlir::ModuleOp> module = Labs::mlirGen(context, my_graph);
         module->dump();
         //----------------------------
