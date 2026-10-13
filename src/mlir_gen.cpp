@@ -2,6 +2,10 @@
 #include "graph.hpp"
 #include "graph_nodes.hpp"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StructuredOpsUtils.h"
+#include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -18,6 +22,7 @@
 #include <algorithm>
 #include <cassert>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -33,22 +38,37 @@ class MLIRGenImpl {
         theModule = owner.get();
 
         mlir::func::FuncOp main = create_main(my_graph.inputs, my_graph.outputs);
-        builder.setInsertionPointToEnd(&main.front());
-        mlir::func::ReturnOp::create(builder, builder.getUnknownLoc());
+        builder.setInsertionPointToStart(&main.front());
+
+        for (const auto &op_ref : my_graph.ops_) {
+            Labs::Op *op = op_ref.get();
+            std::string op_type = op->op_type_;
+
+            if (op_type == "Relu") {
+                gen_relu(static_cast<Labs::Relu &>(*op));
+            } else {
+                throw std::runtime_error("unsupported gen operation now");
+            }
+        }
+
+        llvm::SmallVector<mlir::Value> results;
+        for (const auto *out_val : my_graph.outputs) {
+            results.push_back(valueTable.at(out_val));
+        }
+        mlir::func::ReturnOp::create(builder, builder.getUnknownLoc(), results);
 
         return owner;
     }
 
     mlir::func::FuncOp create_main(const std::vector<Labs::Value *> &inputs,
                                    const std::vector<Labs::Value *> &outputs) {
-        mlir::StringAttr name = builder.getStringAttr("onnx_graph");
-        mlir::Location location = mlir::NameLoc::get(name);
+        mlir::Location location = convert_str_to_loc("onnx_graph");
 
         llvm::SmallVector<mlir::Type> argsTypes = get_types(inputs);
         llvm::SmallVector<mlir::Type> resTypes = get_types(outputs);
 
         // temporary output stub
-        mlir::FunctionType funcType = builder.getFunctionType(argsTypes, {});
+        mlir::FunctionType funcType = builder.getFunctionType(argsTypes, resTypes);
         builder.setInsertionPointToStart(theModule.getBody());
         mlir::func::FuncOp main = mlir::func::FuncOp::create(builder, location, "main", funcType);
 
@@ -66,7 +86,7 @@ class MLIRGenImpl {
     mlir::OpBuilder builder;
     std::unordered_map<const Labs::Value *, mlir::Value> valueTable;
 
-    mlir::Type get_type(const Labs::Value *value) {
+    mlir::RankedTensorType get_type(const Labs::Value *value) {
         mlir::Type mlir_type;
         switch (value->type_) {
         case Labs::DataType::Float32:
@@ -93,10 +113,39 @@ class MLIRGenImpl {
         return vecTypes;
     }
 
+    mlir::Location convert_str_to_loc(std::string op_name) {
+        mlir::StringAttr name = builder.getStringAttr(op_name);
+        return mlir::NameLoc::get(name);
+    }
+
     void valueTable_insertion(const Labs::Value *graph_val, mlir::Value mlir_val) {
         if (!valueTable.emplace(graph_val, mlir_val).second) {
             throw std::runtime_error("Value " + graph_val->name_ + " was define twice");
         }
+    }
+
+    void gen_relu(const Labs::Relu &op) {
+        mlir::Value input = valueTable.at(op.inputs_[0]);
+        mlir::RankedTensorType outType = get_type(op.outputs_[0]);
+        mlir::Location location = convert_str_to_loc(op.outputs_[0]->name_);
+        mlir::Value init = mlir::tensor::EmptyOp::create(builder, location, outType.getShape(),
+                                                         outType.getElementType());
+
+        int64_t rank = outType.getRank();
+        mlir::AffineMap id = builder.getMultiDimIdentityMap(rank);
+        llvm::SmallVector<mlir::AffineMap> maps = {id, id};
+        llvm::SmallVector<mlir::utils::IteratorType> iters(rank,
+                                                           mlir::utils::IteratorType::parallel);
+
+        auto body = [](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
+            mlir::Value zero = mlir::arith::getZeroConstant(b, loc, b.getF32Type());
+            mlir::Value r = mlir::arith::MaximumFOp::create(b, loc, args[0], zero);
+            mlir::linalg::YieldOp::create(b, loc, r);
+        };
+
+        mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
+            builder, location, outType, input, init, maps, iters, body);
+        valueTable_insertion(op.outputs_[0], generic.getResult(0));
     }
 
 }; // class MLIRGenImpl
