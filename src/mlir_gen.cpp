@@ -23,6 +23,7 @@
 #include "llvm/Support/LogicalResult.h"
 #include <algorithm>
 #include <cassert>
+#include <functional>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -30,8 +31,13 @@
 
 namespace {
 llvm::SmallVector<int64_t> convert_shape_to_mlir(const std::vector<int64_t> &val_shape);
+void check_supported_type(mlir::Type elem_type);
+void check_static_shapes(const Labs::Op *op);
+bool is_dynamic(const Labs::Value *val);
 
 class MLIRGenImpl {
+    using BodyBuilder = std::function<void(mlir::OpBuilder &, mlir::Location, mlir::ValueRange)>;
+
   public:
     MLIRGenImpl(mlir::MLIRContext &context) : builder(&context) {}
 
@@ -44,12 +50,15 @@ class MLIRGenImpl {
 
         for (const auto &op_ref : my_graph.ops_) {
             Labs::Op *op = op_ref.get();
-            const std::string &op_type = op->op_type_;
+            check_static_shapes(op);
 
+            const std::string &op_type = op->op_type_;
             if (op_type == "Relu") {
-                gen_relu(static_cast<Labs::Relu &>(*op));
+                gen_relu(*op);
             } else if (op_type == "Add") {
                 gen_add(*op);
+            } else if (op_type == "Mul") {
+                gen_mul(*op);
             } else {
                 throw std::runtime_error("unsupported gen operation now: " + op_type);
             }
@@ -127,67 +136,27 @@ class MLIRGenImpl {
         }
     }
 
-    void gen_relu(const Labs::Relu &op) {
-        mlir::Value input = valueTable.at(op.inputs_[0]);
-        mlir::RankedTensorType outType = get_type(op.outputs_[0]);
-        mlir::Type elem_type = outType.getElementType();
-
-        if (!elem_type.isF32() && !elem_type.isInteger(64)) {
-            throw std::runtime_error(
-                llvm::formatv("Unsupported type of elements: {0}", elem_type).str());
-        }
-
-        mlir::Location location = convert_str_to_loc(op.outputs_[0]->name_);
-        mlir::Value init =
-            mlir::tensor::EmptyOp::create(builder, location, outType.getShape(), elem_type);
-
-        int64_t rank = outType.getRank();
-        mlir::AffineMap id = builder.getMultiDimIdentityMap(rank);
-        llvm::SmallVector<mlir::AffineMap> maps = {id, id};
-        llvm::SmallVector<mlir::utils::IteratorType> iters(rank,
-                                                           mlir::utils::IteratorType::parallel);
+    void gen_relu(const Labs::Op &op) {
+        mlir::Type elem_type = get_type(op.outputs_[0]).getElementType();
 
         auto body = [elem_type](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
             mlir::Value zero = mlir::arith::getZeroConstant(b, loc, elem_type);
 
-            mlir::Value r;
+            mlir::Value res;
             if (elem_type.isF32()) {
-                r = mlir::arith::MaximumFOp::create(b, loc, args[0], zero);
+                res = mlir::arith::MaximumFOp::create(b, loc, args[0], zero);
             } else {
-                r = mlir::arith::MaxSIOp::create(b, loc, args[0], zero);
+                res = mlir::arith::MaxSIOp::create(b, loc, args[0], zero);
             }
 
-            mlir::linalg::YieldOp::create(b, loc, r);
+            mlir::linalg::YieldOp::create(b, loc, res);
         };
 
-        mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
-            builder, location, outType, input, init, maps, iters, body);
-        valueTable_insertion(op.outputs_[0], generic.getResult(0));
+        gen_elementwise(op, body);
     }
 
     void gen_add(const Labs::Op &op) {
-        mlir::Value input1 = valueTable.at(op.inputs_[0]);
-        mlir::Value input2 = valueTable.at(op.inputs_[1]);
-
-        mlir::RankedTensorType outType = get_type(op.outputs_[0]);
-        mlir::Type elem_type = outType.getElementType();
-
-        if (!elem_type.isF32() && !elem_type.isInteger(64)) {
-            throw std::runtime_error(
-                llvm::formatv("Unsupported type of elements: {0}", elem_type).str());
-        }
-
-        int64_t rank = outType.getRank();
-        mlir::AffineMap lhs_map = get_broadcast_map(op.inputs_[0]->shape_, op.outputs_[0]->shape_);
-        mlir::AffineMap rhs_map = get_broadcast_map(op.inputs_[1]->shape_, op.outputs_[0]->shape_);
-        mlir::AffineMap out_map = builder.getMultiDimIdentityMap(rank);
-        mlir::SmallVector<mlir::AffineMap, 3> maps = {lhs_map, rhs_map, out_map};
-        mlir::SmallVector<mlir::utils::IteratorType> iters(rank,
-                                                           mlir::utils::IteratorType::parallel);
-
-        mlir::Location location = convert_str_to_loc(op.outputs_[0]->name_);
-        mlir::Value init =
-            mlir::tensor::EmptyOp::create(builder, location, outType.getShape(), elem_type);
+        mlir::Type elem_type = get_type(op.outputs_[0]).getElementType();
 
         auto body = [elem_type](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
             mlir::Value res;
@@ -200,8 +169,51 @@ class MLIRGenImpl {
             mlir::linalg::YieldOp::create(b, loc, res);
         };
 
+        gen_elementwise(op, body);
+    }
+
+    void gen_mul(const Labs::Op &op) {
+        mlir::Type elem_type = get_type(op.outputs_[0]).getElementType();
+
+        auto body = [elem_type](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
+            mlir::Value res;
+            if (elem_type.isF32()) {
+                res = mlir::arith::MulFOp::create(b, loc, args[0], args[1]);
+            } else {
+                res = mlir::arith::MulIOp::create(b, loc, args[0], args[1]);
+            }
+
+            mlir::linalg::YieldOp::create(b, loc, res);
+        };
+
+        gen_elementwise(op, body);
+    }
+
+    void gen_elementwise(const Labs::Op &op, BodyBuilder lambda) {
+        mlir::RankedTensorType outType = get_type(op.outputs_[0]);
+        mlir::Type elem_type = outType.getElementType();
+        check_supported_type(elem_type);
+
+        mlir::SmallVector<mlir::Value> inputs;
+        mlir::SmallVector<mlir::AffineMap> maps;
+        size_t rank = op.outputs_[0]->shape_.size();
+
+        for (const auto *input_ptr : op.inputs_) {
+            mlir::Value val_i = valueTable.at(input_ptr);
+
+            maps.push_back(get_broadcast_map(input_ptr->shape_, op.outputs_[0]->shape_));
+            inputs.push_back(val_i);
+        }
+        maps.push_back(builder.getMultiDimIdentityMap(rank));
+
+        mlir::Location location = convert_str_to_loc(op.outputs_[0]->name_);
+        mlir::Value init =
+            mlir::tensor::EmptyOp::create(builder, location, outType.getShape(), elem_type);
+        mlir::SmallVector<mlir::utils::IteratorType> iters(rank,
+                                                           mlir::utils::IteratorType::parallel);
+
         mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
-            builder, location, outType, mlir::ValueRange{input1, input2}, init, maps, iters, body);
+            builder, location, outType, inputs, init, maps, iters, lambda);
         valueTable_insertion(op.outputs_[0], generic.getResult(0));
     }
 
@@ -230,6 +242,28 @@ llvm::SmallVector<int64_t> convert_shape_to_mlir(const std::vector<int64_t> &val
 
     std::replace(shape.begin(), shape.end(), absent_dim, mlir::ShapedType::kDynamic);
     return shape;
+}
+
+bool is_dynamic(const Labs::Value *val) {
+    auto dynamic_it = std::find(val->shape_.begin(), val->shape_.end(), -1);
+    return (dynamic_it != val->shape_.end());
+}
+
+void check_static_shapes(const Labs::Op *op) {
+    auto check = [](const Labs::Value *val) {
+        if (is_dynamic(val))
+            throw std::runtime_error("dynamic shapes are not supported yet: " + val->name_);
+    };
+
+    std::for_each(op->inputs_.begin(), op->inputs_.end(), check);
+    std::for_each(op->outputs_.begin(), op->outputs_.end(), check);
+}
+
+void check_supported_type(mlir::Type elem_type) {
+    if (!elem_type.isF32() && !elem_type.isInteger(64)) {
+        throw std::runtime_error(
+            llvm::formatv("Unsupported type of elements: {0}", elem_type).str());
+    }
 }
 } // namespace
 
