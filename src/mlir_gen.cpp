@@ -210,15 +210,32 @@ class MLIRGenImpl {
                                                            mlir::utils::IteratorType::parallel);
         iters.push_back(mlir::utils::IteratorType::reduction);
 
-        mlir::SmallVector<mlir::AffineExpr> input1_expr =
-            get_broadcast_expr(op.inputs_[0]->shape_, op.outputs_[0]->shape_);
-        input1_expr.push_back(builder.getAffineDimExpr(rank - 2));
-        input1_expr.push_back(builder.getAffineDimExpr(rank));
+        bool a_is_vec = (op.inputs_[0]->shape_.size() == 0);
+        bool b_is_vec = (op.inputs_[1]->shape_.size() == 0);
+        size_t out_offset = (a_is_vec ? 0 : 1) + (b_is_vec ? 0 : 1);
+        mlir::AffineExpr di = builder.getAffineDimExpr(rank - 2);
+        mlir::AffineExpr dj = builder.getAffineDimExpr(rank - 1);
+        mlir::AffineExpr dk = builder.getAffineDimExpr(rank);
 
-        mlir::SmallVector<mlir::AffineExpr> input2_expr =
-            get_broadcast_expr(op.inputs_[1]->shape_, op.outputs_[0]->shape_);
-        input2_expr.push_back(builder.getAffineDimExpr(rank));
-        input2_expr.push_back(builder.getAffineDimExpr(rank - 1));
+        mlir::SmallVector<mlir::AffineExpr> input1_expr;
+        if (a_is_vec) {
+            input1_expr.push_back(dk);
+        } else {
+            input1_expr =
+                get_broadcast_exprs(op.inputs_[0]->shape_, op.outputs_[0]->shape_, 2, out_offset);
+            input1_expr.push_back(di);
+            input1_expr.push_back(dk);
+        }
+
+        mlir::SmallVector<mlir::AffineExpr> input2_expr;
+        if (a_is_vec) {
+            input2_expr.push_back(dk);
+        } else {
+            input2_expr =
+                get_broadcast_exprs(op.inputs_[1]->shape_, op.outputs_[0]->shape_, 2, out_offset);
+            input2_expr.push_back(dk);
+            input2_expr.push_back(dj);
+        }
 
         mlir::SmallVector<mlir::AffineExpr> output_expr;
         for (size_t i = 0; i < rank; ++i) {
@@ -279,30 +296,31 @@ class MLIRGenImpl {
         valueTable_insertion(op.outputs_[0], generic.getResult(0));
     }
 
+    // Builds the indexing map of an input operand in the iteration space of the output,
+    // following ONNX broadcast rules: missing leading dims are skipped,
+    // dims of size 1 are mapped to constant 0, the rest to the matching loop dim.
     mlir::AffineMap get_broadcast_map(mlir::ArrayRef<int64_t> input,
                                       mlir::ArrayRef<int64_t> output) {
         if (input == output)
             return builder.getMultiDimIdentityMap(input.size());
 
-        mlir::SmallVector<mlir::AffineExpr> input_affine_expr;
-        size_t size_diff = output.size() - input.size();
-
-        for (size_t i = 0; i < input.size(); ++i) {
-            bool dim_equal_unit = (input[i] == 1);
-            mlir::AffineExpr cur_expr = (dim_equal_unit) ? builder.getAffineConstantExpr(0)
-                                                         : builder.getAffineDimExpr(size_diff + i);
-            input_affine_expr.push_back(cur_expr);
-        }
+        mlir::SmallVector<mlir::AffineExpr> input_affine_expr = get_broadcast_exprs(input, output);
         return mlir::AffineMap::get(output.size(), 0, input_affine_expr, builder.getContext());
     }
 
-    mlir::SmallVector<mlir::AffineExpr> get_broadcast_expr(mlir::ArrayRef<int64_t> input,
-                                                           mlir::ArrayRef<int64_t> output,
-                                                           size_t offset = 2) {
+    // Same rules as get_broadcast_map, but returns the list of expressions
+    // and ignores the last `offset` dims of the input (e.g. offset = 2 for
+    // the matrix dims of MatMul, so only batch dims are broadcast).
+    mlir::SmallVector<mlir::AffineExpr> get_broadcast_exprs(mlir::ArrayRef<int64_t> input,
+                                                            mlir::ArrayRef<int64_t> output,
+                                                            size_t in_offset = 0,
+                                                            size_t out_offset = 0) {
         mlir::SmallVector<mlir::AffineExpr> input_affine_expr;
-        size_t size_diff = output.size() - input.size();
-        size_t loop_counter = input.size() - offset;
-        for (size_t i = 0; i < loop_counter; ++i) {
+        size_t in_batch = input.size() - in_offset;
+        size_t out_batch = output.size() - out_offset;
+        size_t size_diff = out_batch - in_batch;
+
+        for (size_t i = 0; i < in_batch; ++i) {
             bool dim_equal_unit = (input[i] == 1);
             mlir::AffineExpr cur_expr = (dim_equal_unit) ? builder.getAffineConstantExpr(0)
                                                          : builder.getAffineDimExpr(size_diff + i);
