@@ -30,7 +30,7 @@
 #include <vector>
 
 namespace {
-llvm::SmallVector<int64_t> convert_shape_to_mlir(const std::vector<int64_t> &val_shape);
+mlir::SmallVector<int64_t> convert_shape_to_mlir(const std::vector<int64_t> &val_shape);
 void check_supported_type(mlir::Type elem_type);
 void check_static_shapes(const Labs::Op *op);
 bool is_dynamic(const Labs::Value *val);
@@ -59,12 +59,14 @@ class MLIRGenImpl {
                 gen_add(*op);
             } else if (op_type == "Mul") {
                 gen_mul(*op);
+            } else if (op_type == "MatMul") {
+                gen_matmul(*op);
             } else {
                 throw std::runtime_error("unsupported gen operation now: " + op_type);
             }
         }
 
-        llvm::SmallVector<mlir::Value> results;
+        mlir::SmallVector<mlir::Value> results;
         for (const auto *out_val : my_graph.outputs) {
             results.push_back(valueTable.at(out_val));
         }
@@ -77,8 +79,8 @@ class MLIRGenImpl {
                                    const std::vector<Labs::Value *> &outputs) {
         mlir::Location location = convert_str_to_loc("onnx_graph");
 
-        llvm::SmallVector<mlir::Type> argsTypes = get_types(inputs);
-        llvm::SmallVector<mlir::Type> resTypes = get_types(outputs);
+        mlir::SmallVector<mlir::Type> argsTypes = get_types(inputs);
+        mlir::SmallVector<mlir::Type> resTypes = get_types(outputs);
 
         mlir::FunctionType funcType = builder.getFunctionType(argsTypes, resTypes);
         builder.setInsertionPointToStart(theModule.getBody());
@@ -111,12 +113,12 @@ class MLIRGenImpl {
             throw std::runtime_error("Unsupported type");
         }
 
-        llvm::SmallVector<int64_t> mlir_shape = convert_shape_to_mlir(value->shape_);
+        mlir::SmallVector<int64_t> mlir_shape = convert_shape_to_mlir(value->shape_);
         return mlir::RankedTensorType::get(mlir_shape, mlir_type);
     }
 
-    llvm::SmallVector<mlir::Type> get_types(const std::vector<Labs::Value *> &vec) {
-        llvm::SmallVector<mlir::Type> vecTypes;
+    mlir::SmallVector<mlir::Type> get_types(const std::vector<Labs::Value *> &vec) {
+        mlir::SmallVector<mlir::Type> vecTypes;
         vecTypes.reserve(vec.size());
 
         for (const auto *value : vec) {
@@ -189,6 +191,66 @@ class MLIRGenImpl {
         gen_elementwise(op, body);
     }
 
+    void gen_matmul(const Labs::Op &op) {
+        mlir::Value input1 = valueTable.at(op.inputs_[0]);
+        mlir::Value input2 = valueTable.at(op.inputs_[1]);
+        mlir::RankedTensorType outType = get_type(op.outputs_[0]);
+        mlir::Type elem_type = outType.getElementType();
+        check_supported_type(elem_type);
+
+        size_t rank = op.outputs_[0]->shape_.size();
+        mlir::Location location = convert_str_to_loc(op.outputs_[0]->name_);
+        mlir::Value zero = mlir::arith::getZeroConstant(builder, location, elem_type);
+        mlir::Value empty =
+            mlir::tensor::EmptyOp::create(builder, location, outType.getShape(), elem_type);
+        mlir::Value init =
+            mlir::linalg::FillOp::create(builder, location, outType, zero, empty).getResult(0);
+
+        mlir::SmallVector<mlir::utils::IteratorType> iters(rank,
+                                                           mlir::utils::IteratorType::parallel);
+        iters.push_back(mlir::utils::IteratorType::reduction);
+
+        mlir::SmallVector<mlir::AffineExpr> input1_expr =
+            get_broadcast_expr(op.inputs_[0]->shape_, op.outputs_[0]->shape_);
+        input1_expr.push_back(builder.getAffineDimExpr(rank - 2));
+        input1_expr.push_back(builder.getAffineDimExpr(rank));
+
+        mlir::SmallVector<mlir::AffineExpr> input2_expr =
+            get_broadcast_expr(op.inputs_[1]->shape_, op.outputs_[0]->shape_);
+        input2_expr.push_back(builder.getAffineDimExpr(rank));
+        input2_expr.push_back(builder.getAffineDimExpr(rank - 1));
+
+        mlir::SmallVector<mlir::AffineExpr> output_expr;
+        for (size_t i = 0; i < rank; ++i) {
+            output_expr.push_back(builder.getAffineDimExpr(i));
+        }
+
+        mlir::AffineMap input1_map =
+            mlir::AffineMap::get(rank + 1, 0, input1_expr, builder.getContext());
+        mlir::AffineMap input2_map =
+            mlir::AffineMap::get(rank + 1, 0, input2_expr, builder.getContext());
+        mlir::AffineMap output_map =
+            mlir::AffineMap::get(rank + 1, 0, output_expr, builder.getContext());
+        mlir::SmallVector<mlir::AffineMap> maps = {input1_map, input2_map, output_map};
+
+        auto body = [elem_type](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
+            mlir::Value add_res, mul_res;
+            if (elem_type.isF32()) {
+                mul_res = mlir::arith::MulFOp::create(b, loc, args[0], args[1]);
+                add_res = mlir::arith::AddFOp::create(b, loc, args[2], mul_res);
+            } else {
+                mul_res = mlir::arith::MulIOp::create(b, loc, args[0], args[1]);
+                add_res = mlir::arith::AddIOp::create(b, loc, args[2], mul_res);
+            }
+
+            mlir::linalg::YieldOp::create(b, loc, add_res);
+        };
+
+        mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
+            builder, location, outType, mlir::ValueRange{input1, input2}, init, maps, iters, body);
+        valueTable_insertion(op.outputs_[0], generic.getResult(0));
+    }
+
     void gen_elementwise(const Labs::Op &op, BodyBuilder lambda) {
         mlir::RankedTensorType outType = get_type(op.outputs_[0]);
         mlir::Type elem_type = outType.getElementType();
@@ -222,22 +284,37 @@ class MLIRGenImpl {
         if (input == output)
             return builder.getMultiDimIdentityMap(input.size());
 
-        llvm::SmallVector<mlir::AffineExpr> input_affine_expr;
-        size_t offset = output.size() - input.size();
+        mlir::SmallVector<mlir::AffineExpr> input_affine_expr;
+        size_t size_diff = output.size() - input.size();
 
         for (size_t i = 0; i < input.size(); ++i) {
             bool dim_equal_unit = (input[i] == 1);
             mlir::AffineExpr cur_expr = (dim_equal_unit) ? builder.getAffineConstantExpr(0)
-                                                         : builder.getAffineDimExpr(offset + i);
+                                                         : builder.getAffineDimExpr(size_diff + i);
             input_affine_expr.push_back(cur_expr);
         }
         return mlir::AffineMap::get(output.size(), 0, input_affine_expr, builder.getContext());
     }
 
+    mlir::SmallVector<mlir::AffineExpr> get_broadcast_expr(mlir::ArrayRef<int64_t> input,
+                                                           mlir::ArrayRef<int64_t> output,
+                                                           size_t offset = 2) {
+        mlir::SmallVector<mlir::AffineExpr> input_affine_expr;
+        size_t size_diff = output.size() - input.size();
+        size_t loop_counter = input.size() - offset;
+        for (size_t i = 0; i < loop_counter; ++i) {
+            bool dim_equal_unit = (input[i] == 1);
+            mlir::AffineExpr cur_expr = (dim_equal_unit) ? builder.getAffineConstantExpr(0)
+                                                         : builder.getAffineDimExpr(size_diff + i);
+            input_affine_expr.push_back(cur_expr);
+        }
+        return input_affine_expr;
+    }
+
 }; // class MLIRGenImpl
 
-llvm::SmallVector<int64_t> convert_shape_to_mlir(const std::vector<int64_t> &val_shape) {
-    llvm::SmallVector<int64_t> shape(val_shape.begin(), val_shape.end());
+mlir::SmallVector<int64_t> convert_shape_to_mlir(const std::vector<int64_t> &val_shape) {
+    mlir::SmallVector<int64_t> shape(val_shape.begin(), val_shape.end());
     int64_t absent_dim = -1;
 
     std::replace(shape.begin(), shape.end(), absent_dim, mlir::ShapedType::kDynamic);
