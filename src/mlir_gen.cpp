@@ -360,6 +360,8 @@ class MLIRGenImpl {
         valueTable_insertion(gemm.outputs_[0], generic.getResult(0));
     }
 
+    void gen_conv(const Labs::Conv &conv) { mlir::Value K = gen_gemm_init(conv); }
+
     void gen_elementwise(const Labs::Op &op, BodyBuilder lambda) {
         mlir::RankedTensorType outType = get_type(op.outputs_[0]);
         mlir::Type elem_type = outType.getElementType();
@@ -388,6 +390,7 @@ class MLIRGenImpl {
         valueTable_insertion(op.outputs_[0], generic.getResult(0));
     }
 
+    // Prepares mlir::Value equal to the bias of the desired size
     mlir::Value gen_gemm_init(const Labs::Op &op) {
         mlir::RankedTensorType outType = get_type(op.outputs_[0]);
         mlir::Type elem_type = outType.getElementType();
@@ -424,6 +427,39 @@ class MLIRGenImpl {
         mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
             builder, location, outType, bias, init, maps, iters, body);
         return generic.getResult(0);
+    }
+
+    // prepares mlir::Value X: if necessary, performs padding
+    mlir::Value gen_conv_init(const Labs::Conv &conv) {
+        bool no_pad = std::ranges::all_of(conv.pads_, [](int64_t p) { return p == 0; });
+
+        if (no_pad) {
+            return valueTable.at(conv.inputs_[0]);
+        }
+
+        std::size_t spatial_rank = conv.inputs_[0]->shape_.size() - 2;
+        std::vector<int64_t> padded_shape = conv.inputs_[0]->shape_;
+        std::vector<int64_t> low_ints = {0, 0}, high_ints = {0, 0};
+        for (std::size_t i = 0; i < spatial_rank; ++i) {
+            padded_shape[2 + i] += conv.pads_[i];
+            padded_shape[2 + i] += conv.pads_[i + spatial_rank];
+            low_ints.push_back(conv.pads_[i]);
+            high_ints.push_back(conv.pads_[i + spatial_rank]);
+        }
+
+        mlir::RankedTensorType temp_type = get_type(conv.inputs_[0]);
+        mlir::Type elem_type = temp_type.getElementType();
+        mlir::RankedTensorType padded_type = mlir::RankedTensorType::get(padded_shape, elem_type);
+        mlir::Location location = convert_str_to_loc(conv.outputs_[0]->name_);
+        mlir::Value x = valueTable.at(conv.inputs_[0]);
+        auto low = mlir::getAsIndexOpFoldResult(builder.getContext(), low_ints);
+        auto high = mlir::getAsIndexOpFoldResult(builder.getContext(), high_ints);
+        mlir::Value pad_value;
+        pad_value = mlir::arith::getZeroConstant(builder, location, elem_type);
+
+        mlir::Value result =
+            mlir::tensor::PadOp::create(builder, location, padded_type, x, low, high, pad_value);
+        return result;
     }
 
     // Full broadcast map over output.size() loop dims.
