@@ -25,6 +25,7 @@
 #include <cassert>
 #include <cstddef>
 #include <functional>
+#include <ranges>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -48,6 +49,7 @@ class MLIRGenImpl {
 
         mlir::func::FuncOp main = create_main(my_graph.inputs, my_graph.outputs);
         builder.setInsertionPointToStart(&main.front());
+        gen_weights(my_graph.values_);
 
         for (const auto &op_ref : my_graph.ops_) {
             Labs::Op *op = op_ref.get();
@@ -62,6 +64,8 @@ class MLIRGenImpl {
                 gen_mul(*op);
             } else if (op_type == "MatMul") {
                 gen_matmul(*op);
+            } else if (op_type == "Gemm") {
+                gen_gemm(*op);
             } else {
                 throw std::runtime_error("unsupported gen operation now: " + op_type);
             }
@@ -128,14 +132,34 @@ class MLIRGenImpl {
         return vecTypes;
     }
 
+    void gen_weights(const std::vector<std::unique_ptr<Labs::Value>> &values) {
+        auto is_weight = [](const auto &labs_value) {
+            return labs_value->status_ == Labs::DataStatus::Present;
+        };
+
+        for (const auto &uniq_value : values | std::views::filter(is_weight))
+            gen_weight(uniq_value.get());
+    }
+
+    void gen_weight(const Labs::Value *value_ptr) {
+        mlir::RankedTensorType type = get_type(value_ptr);
+        const char *raw_array = reinterpret_cast<const char *>(value_ptr->raw_data_.data());
+        mlir::ArrayRef<char> bytes(raw_array, value_ptr->raw_data_.size());
+        mlir::DenseElementsAttr attr = mlir::DenseElementsAttr::getFromRawBuffer(type, bytes);
+
+        mlir::Location location = convert_str_to_loc("main");
+        mlir::Value cnst = mlir::arith::ConstantOp::create(builder, location, attr);
+        valueTable_insertion(value_ptr, cnst);
+    }
+
     mlir::Location convert_str_to_loc(const std::string &op_name) {
         mlir::StringAttr name = builder.getStringAttr(op_name);
         return mlir::NameLoc::get(name);
     }
 
-    void valueTable_insertion(const Labs::Value *graph_val, mlir::Value mlir_val) {
-        if (!valueTable.emplace(graph_val, mlir_val).second) {
-            throw std::runtime_error("Value " + graph_val->name_ + " was defined twice");
+    void valueTable_insertion(const Labs::Value *labs_value, mlir::Value mlir_value) {
+        if (!valueTable.emplace(labs_value, mlir_value).second) {
+            throw std::runtime_error("Value " + labs_value->name_ + " was defined twice");
         }
     }
 
@@ -277,6 +301,65 @@ class MLIRGenImpl {
         valueTable_insertion(op.outputs_[0], generic.getResult(0));
     }
 
+    void gen_gemm(const Labs::Op &op) {
+        mlir::Value input1 = valueTable.at(op.inputs_[0]);
+        mlir::Value input2 = valueTable.at(op.inputs_[1]);
+        mlir::RankedTensorType outType = get_type(op.outputs_[0]);
+        mlir::Type elem_type = outType.getElementType();
+        check_supported_type(elem_type);
+
+        const Labs::Gemm &gemm = static_cast<const Labs::Gemm &>(op);
+        mlir::Value init = gen_gemm_init(op);
+        mlir::SmallVector<mlir::utils::IteratorType> iters(2, mlir::utils::IteratorType::parallel);
+        iters.push_back(mlir::utils::IteratorType::reduction);
+
+        auto expr_dim = [this](std::size_t rank) { return builder.getAffineDimExpr(rank); };
+        mlir::AffineExpr d0 = expr_dim(0);
+        mlir::AffineExpr d1 = expr_dim(1);
+        mlir::AffineExpr d2 = expr_dim(2);
+        mlir::SmallVector<mlir::AffineExpr> input1_exprs, input2_exprs, out_exprs;
+        out_exprs = {d0, d1};
+        if (gemm.need_transA_) {
+            input1_exprs = {d2, d0};
+        } else {
+            input1_exprs = {d0, d2};
+        }
+        if (gemm.need_transB_) {
+            input2_exprs = {d1, d2};
+        } else {
+            input2_exprs = {d2, d1};
+        }
+
+        mlir::AffineMap input1_map = mlir::AffineMap::get(3, 0, input1_exprs, builder.getContext());
+        mlir::AffineMap input2_map = mlir::AffineMap::get(3, 0, input2_exprs, builder.getContext());
+        mlir::AffineMap out_map = mlir::AffineMap::get(3, 0, out_exprs, builder.getContext());
+        mlir::SmallVector<mlir::AffineMap> maps = {input1_map, input2_map, out_map};
+
+        mlir::Location location = convert_str_to_loc(gemm.outputs_[0]->name_);
+        mlir::Value alpha = mlir::arith::ConstantOp::create(builder, location,
+                                                            builder.getF32FloatAttr(gemm.alpha_));
+
+        auto body = [alpha, elem_type](mlir::OpBuilder &b, mlir::Location loc,
+                                       mlir::ValueRange args) {
+            mlir::Value ab_mul, alpha_ab_mul, res;
+            if (elem_type.isF32()) {
+                ab_mul = mlir::arith::MulFOp::create(b, loc, args[0], args[1]);
+                alpha_ab_mul = mlir::arith::MulFOp::create(b, loc, alpha, ab_mul);
+                res = mlir::arith::AddFOp::create(b, loc, args[2], alpha_ab_mul);
+            } else {
+                ab_mul = mlir::arith::MulIOp::create(b, loc, args[0], args[1]);
+                alpha_ab_mul = mlir::arith::MulIOp::create(b, loc, alpha, ab_mul);
+                res = mlir::arith::AddIOp::create(b, loc, args[2], alpha_ab_mul);
+            }
+
+            mlir::linalg::YieldOp::create(b, loc, res);
+        };
+
+        mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
+            builder, location, outType, mlir::ValueRange{input1, input2}, init, maps, iters, body);
+        valueTable_insertion(gemm.outputs_[0], generic.getResult(0));
+    }
+
     void gen_elementwise(const Labs::Op &op, BodyBuilder lambda) {
         mlir::RankedTensorType outType = get_type(op.outputs_[0]);
         mlir::Type elem_type = outType.getElementType();
@@ -303,6 +386,44 @@ class MLIRGenImpl {
         mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
             builder, location, outType, inputs, init, maps, iters, lambda);
         valueTable_insertion(op.outputs_[0], generic.getResult(0));
+    }
+
+    mlir::Value gen_gemm_init(const Labs::Op &op) {
+        mlir::RankedTensorType outType = get_type(op.outputs_[0]);
+        mlir::Type elem_type = outType.getElementType();
+        mlir::Location location = convert_str_to_loc(op.outputs_[0]->name_);
+        mlir::Value bias = valueTable.at(op.inputs_[2]);
+        mlir::Value init =
+            mlir::tensor::EmptyOp::create(builder, location, outType.getShape(), elem_type);
+
+        if (op.inputs_.size() == 2) {
+            return init;
+        }
+
+        mlir::AffineMap bias_map = get_broadcast_map(op.inputs_[2]->shape_, op.outputs_[0]->shape_);
+        mlir::AffineMap output_map = builder.getMultiDimIdentityMap(op.outputs_[0]->shape_.size());
+        mlir::SmallVector<mlir::AffineMap> maps = {bias_map, output_map};
+        mlir::SmallVector<mlir::utils::IteratorType> iters(op.outputs_[0]->shape_.size(),
+                                                           mlir::utils::IteratorType::parallel);
+
+        const Labs::Gemm &gemm = static_cast<const Labs::Gemm &>(op);
+        mlir::Value beta =
+            mlir::arith::ConstantOp::create(builder, location, builder.getF32FloatAttr(gemm.beta_));
+        auto body = [beta, elem_type](mlir::OpBuilder &b, mlir::Location loc,
+                                      mlir::ValueRange args) {
+            mlir::Value res;
+            if (elem_type.isF32()) {
+                res = mlir::arith::MulFOp::create(b, loc, beta, args[0]);
+            } else {
+                res = mlir::arith::MulIOp::create(b, loc, beta, args[0]);
+            }
+
+            mlir::linalg::YieldOp::create(b, loc, res);
+        };
+
+        mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
+            builder, location, outType, bias, init, maps, iters, body);
+        return generic.getResult(0);
     }
 
     // Full broadcast map over output.size() loop dims.
