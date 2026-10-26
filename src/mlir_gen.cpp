@@ -39,6 +39,8 @@ bool is_dynamic(const Labs::Value *val);
 
 class MLIRGenImpl {
     using BodyBuilder = std::function<void(mlir::OpBuilder &, mlir::Location, mlir::ValueRange)>;
+    using SplitResult =
+        std::pair<std::vector<int64_t>, mlir::SmallVector<mlir::ReassociationIndices>>;
 
   public:
     MLIRGenImpl(mlir::MLIRContext &context) : builder(&context) {}
@@ -66,6 +68,8 @@ class MLIRGenImpl {
                 gen_matmul(*op);
             } else if (op_type == "Gemm") {
                 gen_gemm(*op);
+            } else if (op_type == "Conv") {
+                gen_conv(static_cast<Labs::Conv &>(*op));
             } else {
                 throw std::runtime_error("unsupported gen operation now: " + op_type);
             }
@@ -360,7 +364,121 @@ class MLIRGenImpl {
         valueTable_insertion(gemm.outputs_[0], generic.getResult(0));
     }
 
-    void gen_conv(const Labs::Conv &conv) { mlir::Value K = gen_gemm_init(conv); }
+    void gen_conv(const Labs::Conv &conv) {
+        mlir::Value X = gen_conv_init(conv);
+        mlir::Value K = valueTable.at(conv.inputs_[1]);
+        int64_t G = conv.group_;
+        mlir::Location location = convert_str_to_loc(conv.outputs_[0]->name_);
+        mlir::Type elem_type = mlir::getElementTypeOrSelf(X);
+        check_supported_type(elem_type);
+
+        mlir::RankedTensorType X_padded_type = llvm::cast<mlir::RankedTensorType>(X.getType());
+        auto [split_shape_X, split_groups_X] = split_dim(X_padded_type.getShape(), G, 1);
+        mlir::RankedTensorType X_split_type = mlir::RankedTensorType::get(split_shape_X, elem_type);
+        mlir::Value X_new =
+            mlir::tensor::ExpandShapeOp::create(builder, location, X_split_type, X, split_groups_X);
+
+        auto [split_shape_K, split_groups_K] = split_dim(conv.inputs_[1]->shape_, G, 0);
+        mlir::RankedTensorType K_split_type = mlir::RankedTensorType::get(split_shape_K, elem_type);
+        mlir::Value K_new =
+            mlir::tensor::ExpandShapeOp::create(builder, location, K_split_type, K, split_groups_K);
+
+        auto [split_shape_Y, split_groups_y] = split_dim(conv.outputs_[0]->shape_, G, 1);
+        mlir::RankedTensorType split_Y_type = mlir::RankedTensorType::get(split_shape_Y, elem_type);
+        mlir::Value zero = mlir::arith::getZeroConstant(builder, location, elem_type);
+        mlir::Value empty =
+            mlir::tensor::EmptyOp::create(builder, location, split_shape_Y, elem_type);
+        mlir::Value init =
+            mlir::linalg::FillOp::create(builder, location, zero, empty).getResult(0);
+
+        std::size_t dims_amount = conv.inputs_[0]->shape_.size() - 2;
+        mlir::SmallVector<mlir::utils::IteratorType> iters;
+        iters.append(dims_amount + 3, mlir::utils::IteratorType::parallel);
+        iters.append(dims_amount + 1, mlir::utils::IteratorType::reduction);
+
+        mlir::SmallVector<mlir::AffineExpr> out_exprs;
+        for (std::size_t i = 0; i < 3 + dims_amount; ++i) {
+            out_exprs.push_back(builder.getAffineDimExpr(i));
+        }
+
+        mlir::SmallVector<mlir::AffineExpr> K_exprs;
+        K_exprs.push_back(builder.getAffineDimExpr(1));
+        K_exprs.push_back(builder.getAffineDimExpr(2));
+        for (std::size_t i = dims_amount + 3; i < 2 * dims_amount + 4; ++i) {
+            K_exprs.push_back(builder.getAffineDimExpr(i));
+        }
+
+        mlir::SmallVector<mlir::AffineExpr> X_exprs;
+        X_exprs.push_back(builder.getAffineDimExpr(0));
+        X_exprs.push_back(builder.getAffineDimExpr(1));
+        X_exprs.push_back(builder.getAffineDimExpr(dims_amount + 3));
+        for (std::size_t i = 0; i < dims_amount; ++i) {
+            mlir::AffineExpr cur =
+                builder.getAffineDimExpr(i + 3) * conv.strides_[i] +
+                builder.getAffineDimExpr(i + dims_amount + 4) * conv.dilations_[i];
+            X_exprs.push_back(cur);
+        }
+
+        mlir::AffineMap out_map, K_map, X_map;
+        out_map = mlir::AffineMap::get(2 * dims_amount + 4, 0, out_exprs, builder.getContext());
+        K_map = mlir::AffineMap::get(2 * dims_amount + 4, 0, K_exprs, builder.getContext());
+        X_map = mlir::AffineMap::get(2 * dims_amount + 4, 0, X_exprs, builder.getContext());
+        mlir::SmallVector<mlir::AffineMap> maps = {X_map, K_map, out_map};
+
+        auto body = [elem_type](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
+            mlir::Value mul_res, res;
+            if (elem_type.isF32()) {
+                mul_res = mlir::arith::MulFOp::create(b, loc, args[0], args[1]);
+                res = mlir::arith::AddFOp::create(b, loc, args[2], mul_res);
+            } else {
+                mul_res = mlir::arith::MulIOp::create(b, loc, args[0], args[1]);
+                res = mlir::arith::AddIOp::create(b, loc, args[2], mul_res);
+            }
+
+            mlir::linalg::YieldOp::create(b, loc, res);
+        };
+
+        mlir::RankedTensorType Y_type = get_type(conv.outputs_[0]);
+        mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
+            builder, location, split_Y_type, {X_new, K_new}, init, maps, iters, body);
+        mlir::Value Y = mlir::tensor::CollapseShapeOp::create(builder, location, Y_type,
+                                                              generic.getResult(0), split_groups_y);
+        mlir::Value table_insertion = Y;
+
+        //------------------------------------------------------------------------------------------
+        if (conv.inputs_.size() == 3) {
+            mlir::Value bias = valueTable.at(conv.inputs_[2]);
+            mlir::Value bias_init =
+                mlir::tensor::EmptyOp::create(builder, location, Y_type.getShape(), elem_type);
+            mlir::SmallVector<mlir::utils::IteratorType> bias_iters(
+                dims_amount + 2, mlir::utils::IteratorType::parallel);
+            mlir::AffineExpr bias_exprs = builder.getAffineDimExpr(1);
+
+            mlir::AffineMap bias_map =
+                mlir::AffineMap::get(2 + dims_amount, 0, bias_exprs, builder.getContext());
+            mlir::AffineMap Y_map = builder.getMultiDimIdentityMap(2 + dims_amount);
+            mlir::AffineMap bias_out_map = Y_map;
+            mlir::SmallVector<mlir::AffineMap> bias_maps = {Y_map, bias_map, bias_out_map};
+
+            auto bias_body = [elem_type](mlir::OpBuilder &b, mlir::Location loc,
+                                         mlir::ValueRange args) {
+                mlir::Value res;
+                if (elem_type.isF32()) {
+                    res = mlir::arith::AddFOp::create(b, loc, args[0], args[1]);
+                } else {
+                    res = mlir::arith::AddIOp::create(b, loc, args[0], args[1]);
+                }
+
+                mlir::linalg::YieldOp::create(b, loc, res);
+            };
+
+            mlir::linalg::GenericOp bias_generic = mlir::linalg::GenericOp::create(
+                builder, location, Y_type, {Y, bias}, bias_init, bias_maps, bias_iters, bias_body);
+            table_insertion = bias_generic.getResult(0);
+        }
+
+        valueTable_insertion(conv.outputs_[0], table_insertion);
+    }
 
     void gen_elementwise(const Labs::Op &op, BodyBuilder lambda) {
         mlir::RankedTensorType outType = get_type(op.outputs_[0]);
@@ -487,6 +605,25 @@ class MLIRGenImpl {
             input_affine_expr.push_back(cur_expr);
         }
         return input_affine_expr;
+    }
+
+    SplitResult split_dim(const std::vector<int64_t> &shape, const std::size_t G,
+                          const std::size_t pos) {
+        std::vector<int64_t> split_shape = shape;
+        split_shape[pos] /= G;
+        split_shape.insert(split_shape.begin() + pos, G);
+
+        mlir::SmallVector<mlir::ReassociationIndices> groups;
+        for (int64_t i = 0; i < shape.size(); ++i) {
+            if (i < pos) {
+                groups.push_back({i});
+            } else if (i == pos) {
+                groups.push_back({i, i + 1});
+            } else {
+                groups.push_back({i + 1});
+            }
+        }
+        return {split_shape, groups};
     }
 
 }; // class MLIRGenImpl
