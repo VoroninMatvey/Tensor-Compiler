@@ -228,51 +228,8 @@ class MLIRGenImpl {
         Location location = convert_str_to_loc(op.outputs_[0]->name_);
         Value init = make_zero_tensor(builder, location, outType);
 
+        SmallVector<AffineMap> maps = get_matmul_maps(op, rank);
         SmallVector<utils::IteratorType> iters = make_iters(rank, 1);
-
-        const std::vector<int64_t> &shapeA = op.inputs_[0]->shape_;
-        const std::vector<int64_t> &shapeB = op.inputs_[1]->shape_;
-        const std::vector<int64_t> &shapeC = op.outputs_[0]->shape_;
-        bool a_is_vec = (shapeA.size() == 1);
-        bool b_is_vec = (shapeB.size() == 1);
-        std::size_t output_offset = ((a_is_vec) ? 0 : 1) + ((b_is_vec) ? 0 : 1);
-
-        AffineExpr dk = get_affine_expr(rank);
-        AffineExpr di, dj;
-        if (!b_is_vec)
-            dj = get_affine_expr(rank - 1);
-        if (!a_is_vec)
-            di = get_affine_expr(b_is_vec ? rank - 1 : rank - 2);
-
-        SmallVector<AffineExpr> input1_expr;
-        if (a_is_vec) {
-            input1_expr.push_back(dk);
-        } else {
-            input1_expr = get_broadcast_exprs(ArrayRef(shapeA).drop_back(2),
-                                              ArrayRef(shapeC).drop_back(output_offset));
-            input1_expr.push_back(di);
-            input1_expr.push_back(dk);
-        }
-
-        SmallVector<AffineExpr> input2_expr;
-        if (b_is_vec) {
-            input2_expr.push_back(dk);
-        } else {
-            input2_expr = get_broadcast_exprs(ArrayRef(shapeB).drop_back(2),
-                                              ArrayRef(shapeC).drop_back(output_offset));
-            input2_expr.push_back(dk);
-            input2_expr.push_back(dj);
-        }
-
-        SmallVector<AffineExpr> output_expr;
-        for (std::size_t i = 0; i < rank; ++i) {
-            output_expr.push_back(get_affine_expr(i));
-        }
-
-        AffineMap input1_map = make_map(builder, rank + 1, input1_expr);
-        AffineMap input2_map = make_map(builder, rank + 1, input2_expr);
-        AffineMap output_map = make_map(builder, rank + 1, output_expr);
-        SmallVector<AffineMap> maps = {input1_map, input2_map, output_map};
 
         auto body = [](OpBuilder &b, Location loc, ValueRange args) {
             Value x = args[0], y = args[1], out = args[2];
@@ -518,6 +475,51 @@ class MLIRGenImpl {
             }
         }
         return {std::move(split_shape), std::move(groups)};
+    }
+
+    SmallVector<AffineMap> get_matmul_maps(const Labs::Op &op, std::size_t rank) {
+        const std::vector<int64_t> &a_shape = op.inputs_[0]->shape_;
+        const std::vector<int64_t> &b_shape = op.inputs_[1]->shape_;
+        const std::vector<int64_t> &out_shape = op.outputs_[0]->shape_;
+        bool a_is_vec = (a_shape.size() == 1);
+        bool b_is_vec = (b_shape.size() == 1);
+
+        std::size_t batch_rank = rank - (a_is_vec ? 0 : 1) - (b_is_vec ? 0 : 1);
+        ArrayRef<int64_t> out_batch = ArrayRef(out_shape).take_front(batch_rank);
+
+        AffineExpr dk = get_affine_expr(rank);
+        AffineExpr dj = b_is_vec ? AffineExpr() : get_affine_expr(rank - 1);
+        AffineExpr di = a_is_vec ? AffineExpr() : get_affine_expr(batch_rank);
+
+        SmallVector<AffineExpr> input1_expr;
+        if (a_is_vec) {
+            input1_expr.push_back(dk);
+        } else {
+            input1_expr = get_broadcast_exprs(ArrayRef(a_shape).drop_back(2), out_batch);
+            input1_expr.push_back(di);
+            input1_expr.push_back(dk);
+        }
+
+        SmallVector<AffineExpr> input2_expr;
+        if (b_is_vec) {
+            input2_expr.push_back(dk);
+        } else {
+            input2_expr = get_broadcast_exprs(ArrayRef(b_shape).drop_back(2), out_batch);
+            input2_expr.push_back(dk);
+            input2_expr.push_back(dj);
+        }
+
+        SmallVector<AffineExpr> output_expr;
+        for (std::size_t i = 0; i < rank; ++i) {
+            output_expr.push_back(get_affine_expr(i));
+        }
+
+        std::size_t loops_amount = rank + 1;
+        AffineMap input1_map = make_map(builder, loops_amount, input1_expr);
+        AffineMap input2_map = make_map(builder, loops_amount, input2_expr);
+        AffineMap output_map = make_map(builder, loops_amount, output_expr);
+
+        return {input1_map, input2_map, output_map};
     }
 
     SmallVector<AffineMap> get_conv_maps(const Labs::Conv &conv, std::size_t spatial_rank) {
