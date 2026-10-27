@@ -47,6 +47,10 @@ mlir::Value create_generic(mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRa
                            mlir::ArrayRef<mlir::utils::IteratorType> iters,
                            const BodyBuilder &body);
 
+mlir::SmallVector<mlir::utils::IteratorType> make_iters(std::size_t n_par, std::size_t n_red);
+mlir::Value make_zero_tensor(mlir::OpBuilder &b, mlir::Location loc,
+                             mlir::RankedTensorType out_type);
+
 class MLIRGenImpl {
     using SplitResult =
         std::pair<std::vector<int64_t>, mlir::SmallVector<mlir::ReassociationIndices>>;
@@ -219,15 +223,9 @@ class MLIRGenImpl {
 
         std::size_t rank = op.outputs_[0]->shape_.size();
         mlir::Location location = convert_str_to_loc(op.outputs_[0]->name_);
-        mlir::Value zero = mlir::arith::getZeroConstant(builder, location, elem_type);
-        mlir::Value empty =
-            mlir::tensor::EmptyOp::create(builder, location, outType.getShape(), elem_type);
-        mlir::Value init =
-            mlir::linalg::FillOp::create(builder, location, outType, zero, empty).getResult(0);
+        mlir::Value init = make_zero_tensor(builder, location, outType);
 
-        mlir::SmallVector<mlir::utils::IteratorType> iters(rank,
-                                                           mlir::utils::IteratorType::parallel);
-        iters.push_back(mlir::utils::IteratorType::reduction);
+        mlir::SmallVector<mlir::utils::IteratorType> iters = make_iters(rank, 1);
 
         const std::vector<int64_t> &shapeA = op.inputs_[0]->shape_;
         const std::vector<int64_t> &shapeB = op.inputs_[1]->shape_;
@@ -300,8 +298,7 @@ class MLIRGenImpl {
 
         const Labs::Gemm &gemm = static_cast<const Labs::Gemm &>(op);
         mlir::Value init = gen_gemm_init(op);
-        mlir::SmallVector<mlir::utils::IteratorType> iters(2, mlir::utils::IteratorType::parallel);
-        iters.push_back(mlir::utils::IteratorType::reduction);
+        mlir::SmallVector<mlir::utils::IteratorType> iters = make_iters(2, 1);
 
         auto expr_dim = [this](std::size_t rank) { return builder.getAffineDimExpr(rank); };
         mlir::AffineExpr d0 = expr_dim(0);
@@ -364,16 +361,11 @@ class MLIRGenImpl {
 
         auto [split_shape_Y, split_groups_y] = split_dim(conv.outputs_[0]->shape_, G, 1);
         mlir::RankedTensorType split_Y_type = mlir::RankedTensorType::get(split_shape_Y, elem_type);
-        mlir::Value zero = mlir::arith::getZeroConstant(builder, location, elem_type);
-        mlir::Value empty =
-            mlir::tensor::EmptyOp::create(builder, location, split_shape_Y, elem_type);
-        mlir::Value init =
-            mlir::linalg::FillOp::create(builder, location, zero, empty).getResult(0);
+        mlir::Value init = make_zero_tensor(builder, location, split_Y_type);
 
         std::size_t dims_amount = conv.inputs_[0]->shape_.size() - 2;
-        mlir::SmallVector<mlir::utils::IteratorType> iters;
-        iters.append(dims_amount + 3, mlir::utils::IteratorType::parallel);
-        iters.append(dims_amount + 1, mlir::utils::IteratorType::reduction);
+        mlir::SmallVector<mlir::utils::IteratorType> iters =
+            make_iters(dims_amount + 3, dims_amount + 1);
 
         mlir::SmallVector<mlir::AffineExpr> out_exprs;
         for (std::size_t i = 0; i < 3 + dims_amount; ++i) {
@@ -424,8 +416,8 @@ class MLIRGenImpl {
             mlir::Value bias = valueTable.at(conv.inputs_[2]);
             mlir::Value bias_init =
                 mlir::tensor::EmptyOp::create(builder, location, Y_type.getShape(), elem_type);
-            mlir::SmallVector<mlir::utils::IteratorType> bias_iters(
-                dims_amount + 2, mlir::utils::IteratorType::parallel);
+            mlir::SmallVector<mlir::utils::IteratorType> bias_iters =
+                make_iters(dims_amount + 2, 0);
             mlir::AffineExpr bias_exprs = builder.getAffineDimExpr(1);
 
             mlir::AffineMap bias_map =
@@ -469,8 +461,7 @@ class MLIRGenImpl {
         mlir::Location location = convert_str_to_loc(op.outputs_[0]->name_);
         mlir::Value init =
             mlir::tensor::EmptyOp::create(builder, location, outType.getShape(), elem_type);
-        mlir::SmallVector<mlir::utils::IteratorType> iters(rank,
-                                                           mlir::utils::IteratorType::parallel);
+        mlir::SmallVector<mlir::utils::IteratorType> iters = make_iters(rank, 0);
 
         mlir::Value generic_res =
             create_generic(builder, location, inputs, init, maps, iters, body);
@@ -482,22 +473,21 @@ class MLIRGenImpl {
         mlir::RankedTensorType outType = get_type(op.outputs_[0]);
         mlir::Type elem_type = outType.getElementType();
         mlir::Location location = convert_str_to_loc(op.outputs_[0]->name_);
-        mlir::Value init =
-            mlir::tensor::EmptyOp::create(builder, location, outType.getShape(), elem_type);
 
         if (op.inputs_.size() == 2) {
-            mlir::Value zero = mlir::arith::getZeroConstant(builder, location, elem_type);
-            mlir::Value fill_init =
-                mlir::linalg::FillOp::create(builder, location, outType, init, zero).getResult(0);
-            return fill_init;
+            mlir::Value zeros = make_zero_tensor(builder, location, outType);
+
+            return zeros;
         }
 
+        mlir::Value init =
+            mlir::tensor::EmptyOp::create(builder, location, outType.getShape(), elem_type);
         mlir::Value bias = valueTable.at(op.inputs_[2]);
         mlir::AffineMap bias_map = get_broadcast_map(op.inputs_[2]->shape_, op.outputs_[0]->shape_);
         mlir::AffineMap output_map = builder.getMultiDimIdentityMap(op.outputs_[0]->shape_.size());
         mlir::SmallVector<mlir::AffineMap> maps = {bias_map, output_map};
-        mlir::SmallVector<mlir::utils::IteratorType> iters(op.outputs_[0]->shape_.size(),
-                                                           mlir::utils::IteratorType::parallel);
+        mlir::SmallVector<mlir::utils::IteratorType> iters =
+            make_iters(op.outputs_[0]->shape_.size(), 0);
 
         const Labs::Gemm &gemm = static_cast<const Labs::Gemm &>(op);
         mlir::Value beta =
@@ -657,6 +647,24 @@ mlir::Value create_max(mlir::OpBuilder &b, mlir::Location loc, mlir::Value x, ml
     }
 
     return mlir::arith::MaxSIOp::create(b, loc, x, y);
+}
+
+mlir::SmallVector<mlir::utils::IteratorType> make_iters(std::size_t n_par, std::size_t n_red) {
+    mlir::SmallVector<mlir::utils::IteratorType> iters;
+    iters.append(n_par, mlir::utils::IteratorType::parallel);
+    iters.append(n_red, mlir::utils::IteratorType::reduction);
+
+    return iters;
+}
+
+mlir::Value make_zero_tensor(mlir::OpBuilder &b, mlir::Location loc,
+                             mlir::RankedTensorType out_type) {
+    mlir::Value zero = mlir::arith::getZeroConstant(b, loc, out_type.getElementType());
+    mlir::Value empty =
+        mlir::tensor::EmptyOp::create(b, loc, out_type.getShape(), out_type.getElementType());
+    mlir::Value zeros = mlir::linalg::FillOp::create(b, loc, out_type, zero, empty).getResult(0);
+
+    return zeros;
 }
 } // namespace
 
