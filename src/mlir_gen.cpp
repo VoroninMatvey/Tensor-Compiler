@@ -37,6 +37,10 @@ void check_supported_type(mlir::Type elem_type);
 void check_static_shapes(const Labs::Op *op);
 bool is_dynamic(const Labs::Value *val);
 
+mlir::Value create_add(mlir::OpBuilder &b, mlir::Location loc, mlir::Value x, mlir::Value y);
+mlir::Value create_mul(mlir::OpBuilder &b, mlir::Location loc, mlir::Value x, mlir::Value y);
+mlir::Value create_max(mlir::OpBuilder &b, mlir::Location loc, mlir::Value x, mlir::Value y);
+
 class MLIRGenImpl {
     using BodyBuilder = std::function<void(mlir::OpBuilder &, mlir::Location, mlir::ValueRange)>;
     using SplitResult =
@@ -170,17 +174,12 @@ class MLIRGenImpl {
     void gen_relu(const Labs::Op &op) {
         mlir::Type elem_type = get_type(op.outputs_[0]).getElementType();
 
-        auto body = [elem_type](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
-            mlir::Value zero = mlir::arith::getZeroConstant(b, loc, elem_type);
+        auto body = [](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
+            mlir::Value x = args[0];
+            mlir::Value zero = mlir::arith::getZeroConstant(b, loc, x.getType());
 
-            mlir::Value res;
-            if (elem_type.isF32()) {
-                res = mlir::arith::MaximumFOp::create(b, loc, args[0], zero);
-            } else {
-                res = mlir::arith::MaxSIOp::create(b, loc, args[0], zero);
-            }
-
-            mlir::linalg::YieldOp::create(b, loc, res);
+            mlir::Value max_res = create_max(b, loc, x, zero);
+            mlir::linalg::YieldOp::create(b, loc, max_res);
         };
 
         gen_elementwise(op, body);
@@ -189,15 +188,11 @@ class MLIRGenImpl {
     void gen_add(const Labs::Op &op) {
         mlir::Type elem_type = get_type(op.outputs_[0]).getElementType();
 
-        auto body = [elem_type](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
-            mlir::Value res;
-            if (elem_type.isF32()) {
-                res = mlir::arith::AddFOp::create(b, loc, args[0], args[1]);
-            } else {
-                res = mlir::arith::AddIOp::create(b, loc, args[0], args[1]);
-            }
+        auto body = [](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
+            mlir::Value x = args[0], y = args[1];
 
-            mlir::linalg::YieldOp::create(b, loc, res);
+            mlir::Value add_res = create_add(b, loc, x, y);
+            mlir::linalg::YieldOp::create(b, loc, add_res);
         };
 
         gen_elementwise(op, body);
@@ -206,15 +201,11 @@ class MLIRGenImpl {
     void gen_mul(const Labs::Op &op) {
         mlir::Type elem_type = get_type(op.outputs_[0]).getElementType();
 
-        auto body = [elem_type](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
-            mlir::Value res;
-            if (elem_type.isF32()) {
-                res = mlir::arith::MulFOp::create(b, loc, args[0], args[1]);
-            } else {
-                res = mlir::arith::MulIOp::create(b, loc, args[0], args[1]);
-            }
+        auto body = [](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
+            mlir::Value x = args[0], y = args[1];
 
-            mlir::linalg::YieldOp::create(b, loc, res);
+            mlir::Value mul_res = create_mul(b, loc, x, y);
+            mlir::linalg::YieldOp::create(b, loc, mul_res);
         };
 
         gen_elementwise(op, body);
@@ -287,16 +278,11 @@ class MLIRGenImpl {
             mlir::AffineMap::get(rank + 1, 0, output_expr, builder.getContext());
         mlir::SmallVector<mlir::AffineMap> maps = {input1_map, input2_map, output_map};
 
-        auto body = [elem_type](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
-            mlir::Value add_res, mul_res;
-            if (elem_type.isF32()) {
-                mul_res = mlir::arith::MulFOp::create(b, loc, args[0], args[1]);
-                add_res = mlir::arith::AddFOp::create(b, loc, args[2], mul_res);
-            } else {
-                mul_res = mlir::arith::MulIOp::create(b, loc, args[0], args[1]);
-                add_res = mlir::arith::AddIOp::create(b, loc, args[2], mul_res);
-            }
+        auto body = [](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
+            mlir::Value x = args[0], y = args[1], out = args[2];
 
+            mlir::Value mul_res = create_mul(b, loc, x, y);
+            mlir::Value add_res = create_add(b, loc, out, mul_res);
             mlir::linalg::YieldOp::create(b, loc, add_res);
         };
 
@@ -310,7 +296,8 @@ class MLIRGenImpl {
         mlir::Value input2 = valueTable.at(op.inputs_[1]);
         mlir::RankedTensorType outType = get_type(op.outputs_[0]);
         mlir::Type elem_type = outType.getElementType();
-        check_supported_type(elem_type);
+        if (!elem_type.isF32())
+            throw std::runtime_error("Gemm is supported only for f32: " + op.outputs_[0]->name_);
 
         const Labs::Gemm &gemm = static_cast<const Labs::Gemm &>(op);
         mlir::Value init = gen_gemm_init(op);
@@ -343,20 +330,13 @@ class MLIRGenImpl {
         mlir::Value alpha = mlir::arith::ConstantOp::create(builder, location,
                                                             builder.getF32FloatAttr(gemm.alpha_));
 
-        auto body = [alpha, elem_type](mlir::OpBuilder &b, mlir::Location loc,
-                                       mlir::ValueRange args) {
-            mlir::Value ab_mul, alpha_ab_mul, res;
-            if (elem_type.isF32()) {
-                ab_mul = mlir::arith::MulFOp::create(b, loc, args[0], args[1]);
-                alpha_ab_mul = mlir::arith::MulFOp::create(b, loc, alpha, ab_mul);
-                res = mlir::arith::AddFOp::create(b, loc, args[2], alpha_ab_mul);
-            } else {
-                ab_mul = mlir::arith::MulIOp::create(b, loc, args[0], args[1]);
-                alpha_ab_mul = mlir::arith::MulIOp::create(b, loc, alpha, ab_mul);
-                res = mlir::arith::AddIOp::create(b, loc, args[2], alpha_ab_mul);
-            }
+        auto body = [alpha](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
+            mlir::Value x = args[0], y = args[1], out = args[2];
 
-            mlir::linalg::YieldOp::create(b, loc, res);
+            mlir::Value xy_mul = create_mul(b, loc, x, y);
+            mlir::Value alpha_xy_mul = create_mul(b, loc, alpha, xy_mul);
+            mlir::Value add_res = create_add(b, loc, out, alpha_xy_mul);
+            mlir::linalg::YieldOp::create(b, loc, add_res);
         };
 
         mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
@@ -425,17 +405,12 @@ class MLIRGenImpl {
         X_map = mlir::AffineMap::get(2 * dims_amount + 4, 0, X_exprs, builder.getContext());
         mlir::SmallVector<mlir::AffineMap> maps = {X_map, K_map, out_map};
 
-        auto body = [elem_type](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
-            mlir::Value mul_res, res;
-            if (elem_type.isF32()) {
-                mul_res = mlir::arith::MulFOp::create(b, loc, args[0], args[1]);
-                res = mlir::arith::AddFOp::create(b, loc, args[2], mul_res);
-            } else {
-                mul_res = mlir::arith::MulIOp::create(b, loc, args[0], args[1]);
-                res = mlir::arith::AddIOp::create(b, loc, args[2], mul_res);
-            }
+        auto body = [](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
+            mlir::Value x = args[0], k = args[1], out = args[2];
 
-            mlir::linalg::YieldOp::create(b, loc, res);
+            mlir::Value mul_res = create_mul(b, loc, x, k);
+            mlir::Value add_res = create_add(b, loc, out, mul_res);
+            mlir::linalg::YieldOp::create(b, loc, add_res);
         };
 
         mlir::RankedTensorType Y_type = get_type(conv.outputs_[0]);
@@ -460,16 +435,11 @@ class MLIRGenImpl {
             mlir::AffineMap bias_out_map = Y_map;
             mlir::SmallVector<mlir::AffineMap> bias_maps = {Y_map, bias_map, bias_out_map};
 
-            auto bias_body = [elem_type](mlir::OpBuilder &b, mlir::Location loc,
-                                         mlir::ValueRange args) {
-                mlir::Value res;
-                if (elem_type.isF32()) {
-                    res = mlir::arith::AddFOp::create(b, loc, args[0], args[1]);
-                } else {
-                    res = mlir::arith::AddIOp::create(b, loc, args[0], args[1]);
-                }
+            auto bias_body = [](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
+                mlir::Value conv_res = args[0], bias = args[1];
 
-                mlir::linalg::YieldOp::create(b, loc, res);
+                mlir::Value add_res = create_add(b, loc, conv_res, bias);
+                mlir::linalg::YieldOp::create(b, loc, add_res);
             };
 
             mlir::linalg::GenericOp bias_generic = mlir::linalg::GenericOp::create(
@@ -513,14 +483,17 @@ class MLIRGenImpl {
         mlir::RankedTensorType outType = get_type(op.outputs_[0]);
         mlir::Type elem_type = outType.getElementType();
         mlir::Location location = convert_str_to_loc(op.outputs_[0]->name_);
-        mlir::Value bias = valueTable.at(op.inputs_[2]);
         mlir::Value init =
             mlir::tensor::EmptyOp::create(builder, location, outType.getShape(), elem_type);
 
         if (op.inputs_.size() == 2) {
-            return init;
+            mlir::Value zero = mlir::arith::getZeroConstant(builder, location, elem_type);
+            mlir::Value fill_init =
+                mlir::linalg::FillOp::create(builder, location, outType, init, zero).getResult(0);
+            return fill_init;
         }
 
+        mlir::Value bias = valueTable.at(op.inputs_[2]);
         mlir::AffineMap bias_map = get_broadcast_map(op.inputs_[2]->shape_, op.outputs_[0]->shape_);
         mlir::AffineMap output_map = builder.getMultiDimIdentityMap(op.outputs_[0]->shape_.size());
         mlir::SmallVector<mlir::AffineMap> maps = {bias_map, output_map};
@@ -530,16 +503,11 @@ class MLIRGenImpl {
         const Labs::Gemm &gemm = static_cast<const Labs::Gemm &>(op);
         mlir::Value beta =
             mlir::arith::ConstantOp::create(builder, location, builder.getF32FloatAttr(gemm.beta_));
-        auto body = [beta, elem_type](mlir::OpBuilder &b, mlir::Location loc,
-                                      mlir::ValueRange args) {
-            mlir::Value res;
-            if (elem_type.isF32()) {
-                res = mlir::arith::MulFOp::create(b, loc, beta, args[0]);
-            } else {
-                res = mlir::arith::MulIOp::create(b, loc, beta, args[0]);
-            }
+        auto body = [beta](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
+            mlir::Value bias = args[0];
 
-            mlir::linalg::YieldOp::create(b, loc, res);
+            mlir::Value mul_res = create_mul(b, loc, beta, bias);
+            mlir::linalg::YieldOp::create(b, loc, mul_res);
         };
 
         mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
@@ -623,7 +591,7 @@ class MLIRGenImpl {
                 groups.push_back({i + 1});
             }
         }
-        return {split_shape, groups};
+        return {std::move(split_shape), std::move(groups)};
     }
 
 }; // class MLIRGenImpl
@@ -656,6 +624,30 @@ void check_supported_type(mlir::Type elem_type) {
         throw std::runtime_error(
             llvm::formatv("Unsupported type of elements: {0}", elem_type).str());
     }
+}
+
+mlir::Value create_add(mlir::OpBuilder &b, mlir::Location loc, mlir::Value x, mlir::Value y) {
+    if (x.getType().isF32()) {
+        return mlir::arith::AddFOp::create(b, loc, x, y);
+    }
+
+    return mlir::arith::AddIOp::create(b, loc, x, y);
+}
+
+mlir::Value create_mul(mlir::OpBuilder &b, mlir::Location loc, mlir::Value x, mlir::Value y) {
+    if (x.getType().isF32()) {
+        return mlir::arith::MulFOp::create(b, loc, x, y);
+    }
+
+    return mlir::arith::MulFOp::create(b, loc, x, y);
+}
+
+mlir::Value create_max(mlir::OpBuilder &b, mlir::Location loc, mlir::Value x, mlir::Value y) {
+    if (x.getType().isF32()) {
+        return mlir::arith::MaximumFOp::create(b, loc, x, y);
+    }
+
+    return mlir::arith::MaxSIOp::create(b, loc, x, y);
 }
 } // namespace
 
