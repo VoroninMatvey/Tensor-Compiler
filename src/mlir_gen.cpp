@@ -48,6 +48,8 @@ mlir::Value create_generic(mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRa
                            const BodyBuilder &body);
 
 mlir::SmallVector<mlir::utils::IteratorType> make_iters(std::size_t n_par, std::size_t n_red);
+mlir::AffineMap make_map(mlir::OpBuilder &b, std::size_t loops_amount,
+                         mlir::ArrayRef<mlir::AffineExpr> exprs);
 mlir::Value make_zero_tensor(mlir::OpBuilder &b, mlir::Location loc,
                              mlir::RankedTensorType out_type);
 
@@ -234,8 +236,8 @@ class MLIRGenImpl {
         bool b_is_vec = (shapeB.size() == 1);
         std::size_t output_offset = ((a_is_vec) ? 0 : 1) + ((b_is_vec) ? 0 : 1);
 
-        auto expr_dim = [this](std::size_t rank) { return builder.getAffineDimExpr(rank); };
-        mlir::AffineExpr dk = builder.getAffineDimExpr(rank);
+        auto expr_dim = [this](std::size_t rank) { return get_affine_expr(rank); };
+        mlir::AffineExpr dk = get_affine_expr(rank);
         mlir::AffineExpr di, dj;
         if (!b_is_vec)
             dj = expr_dim(rank - 1);
@@ -264,15 +266,12 @@ class MLIRGenImpl {
 
         mlir::SmallVector<mlir::AffineExpr> output_expr;
         for (std::size_t i = 0; i < rank; ++i) {
-            output_expr.push_back(builder.getAffineDimExpr(i));
+            output_expr.push_back(get_affine_expr(i));
         }
 
-        mlir::AffineMap input1_map =
-            mlir::AffineMap::get(rank + 1, 0, input1_expr, builder.getContext());
-        mlir::AffineMap input2_map =
-            mlir::AffineMap::get(rank + 1, 0, input2_expr, builder.getContext());
-        mlir::AffineMap output_map =
-            mlir::AffineMap::get(rank + 1, 0, output_expr, builder.getContext());
+        mlir::AffineMap input1_map = make_map(builder, rank + 1, input1_expr);
+        mlir::AffineMap input2_map = make_map(builder, rank + 1, input2_expr);
+        mlir::AffineMap output_map = make_map(builder, rank + 1, output_expr);
         mlir::SmallVector<mlir::AffineMap> maps = {input1_map, input2_map, output_map};
 
         auto body = [](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
@@ -300,12 +299,11 @@ class MLIRGenImpl {
         mlir::Value init = gen_gemm_init(op);
         mlir::SmallVector<mlir::utils::IteratorType> iters = make_iters(2, 1);
 
-        auto expr_dim = [this](std::size_t rank) { return builder.getAffineDimExpr(rank); };
-        mlir::AffineExpr d0 = expr_dim(0);
-        mlir::AffineExpr d1 = expr_dim(1);
-        mlir::AffineExpr d2 = expr_dim(2);
-        mlir::SmallVector<mlir::AffineExpr> input1_exprs, input2_exprs, out_exprs;
-        out_exprs = {d0, d1};
+        mlir::AffineExpr d0 = get_affine_expr(0);
+        mlir::AffineExpr d1 = get_affine_expr(1);
+        mlir::AffineExpr d2 = get_affine_expr(2);
+        mlir::SmallVector<mlir::AffineExpr> input1_exprs, input2_exprs, output_exprs;
+        output_exprs = {d0, d1};
         if (gemm.need_transA_) {
             input1_exprs = {d2, d0};
         } else {
@@ -317,10 +315,10 @@ class MLIRGenImpl {
             input2_exprs = {d2, d1};
         }
 
-        mlir::AffineMap input1_map = mlir::AffineMap::get(3, 0, input1_exprs, builder.getContext());
-        mlir::AffineMap input2_map = mlir::AffineMap::get(3, 0, input2_exprs, builder.getContext());
-        mlir::AffineMap out_map = mlir::AffineMap::get(3, 0, out_exprs, builder.getContext());
-        mlir::SmallVector<mlir::AffineMap> maps = {input1_map, input2_map, out_map};
+        mlir::AffineMap input1_map = make_map(builder, 3, input1_exprs);
+        mlir::AffineMap input2_map = make_map(builder, 3, input2_exprs);
+        mlir::AffineMap output_map = make_map(builder, 3, output_exprs);
+        mlir::SmallVector<mlir::AffineMap> maps = {input1_map, input2_map, output_map};
 
         mlir::Location location = convert_str_to_loc(gemm.outputs_[0]->name_);
         mlir::Value alpha = mlir::arith::ConstantOp::create(builder, location,
@@ -367,33 +365,32 @@ class MLIRGenImpl {
         mlir::SmallVector<mlir::utils::IteratorType> iters =
             make_iters(dims_amount + 3, dims_amount + 1);
 
-        mlir::SmallVector<mlir::AffineExpr> out_exprs;
+        mlir::SmallVector<mlir::AffineExpr> output_exprs;
         for (std::size_t i = 0; i < 3 + dims_amount; ++i) {
-            out_exprs.push_back(builder.getAffineDimExpr(i));
+            output_exprs.push_back(get_affine_expr(i));
         }
 
         mlir::SmallVector<mlir::AffineExpr> K_exprs;
-        K_exprs.push_back(builder.getAffineDimExpr(1));
-        K_exprs.push_back(builder.getAffineDimExpr(2));
+        K_exprs.push_back(get_affine_expr(1));
+        K_exprs.push_back(get_affine_expr(2));
         for (std::size_t i = dims_amount + 3; i < 2 * dims_amount + 4; ++i) {
-            K_exprs.push_back(builder.getAffineDimExpr(i));
+            K_exprs.push_back(get_affine_expr(i));
         }
 
         mlir::SmallVector<mlir::AffineExpr> X_exprs;
-        X_exprs.push_back(builder.getAffineDimExpr(0));
-        X_exprs.push_back(builder.getAffineDimExpr(1));
-        X_exprs.push_back(builder.getAffineDimExpr(dims_amount + 3));
+        X_exprs.push_back(get_affine_expr(0));
+        X_exprs.push_back(get_affine_expr(1));
+        X_exprs.push_back(get_affine_expr(dims_amount + 3));
         for (std::size_t i = 0; i < dims_amount; ++i) {
-            mlir::AffineExpr cur =
-                builder.getAffineDimExpr(i + 3) * conv.strides_[i] +
-                builder.getAffineDimExpr(i + dims_amount + 4) * conv.dilations_[i];
+            mlir::AffineExpr cur = get_affine_expr(i + 3) * conv.strides_[i] +
+                                   get_affine_expr(i + dims_amount + 4) * conv.dilations_[i];
             X_exprs.push_back(cur);
         }
 
         mlir::AffineMap out_map, K_map, X_map;
-        out_map = mlir::AffineMap::get(2 * dims_amount + 4, 0, out_exprs, builder.getContext());
-        K_map = mlir::AffineMap::get(2 * dims_amount + 4, 0, K_exprs, builder.getContext());
-        X_map = mlir::AffineMap::get(2 * dims_amount + 4, 0, X_exprs, builder.getContext());
+        out_map = make_map(builder, 2 * dims_amount + 4, output_exprs);
+        K_map = make_map(builder, 2 * dims_amount + 4, K_exprs);
+        X_map = make_map(builder, 2 * dims_amount + 4, X_exprs);
         mlir::SmallVector<mlir::AffineMap> maps = {X_map, K_map, out_map};
 
         auto body = [](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
@@ -418,10 +415,9 @@ class MLIRGenImpl {
                 mlir::tensor::EmptyOp::create(builder, location, Y_type.getShape(), elem_type);
             mlir::SmallVector<mlir::utils::IteratorType> bias_iters =
                 make_iters(dims_amount + 2, 0);
-            mlir::AffineExpr bias_exprs = builder.getAffineDimExpr(1);
+            mlir::AffineExpr bias_exprs = get_affine_expr(1);
 
-            mlir::AffineMap bias_map =
-                mlir::AffineMap::get(2 + dims_amount, 0, bias_exprs, builder.getContext());
+            mlir::AffineMap bias_map = make_map(builder, 2 + dims_amount, bias_exprs);
             mlir::AffineMap Y_map = builder.getMultiDimIdentityMap(2 + dims_amount);
             mlir::AffineMap bias_out_map = Y_map;
             mlir::SmallVector<mlir::AffineMap> bias_maps = {Y_map, bias_map, bias_out_map};
@@ -543,7 +539,7 @@ class MLIRGenImpl {
             return builder.getMultiDimIdentityMap(input.size());
 
         mlir::SmallVector<mlir::AffineExpr> exprs = get_broadcast_exprs(input, output);
-        return mlir::AffineMap::get(output.size(), 0, exprs, builder.getContext());
+        return make_map(builder, output.size(), exprs);
     }
 
     // Broadcast index expressions for `input` aligned to `output` (NumPy-style):
@@ -557,7 +553,7 @@ class MLIRGenImpl {
         for (std::size_t i = 0; i < input.size(); ++i) {
             bool dim_equal_unit = (input[i] == 1);
             mlir::AffineExpr cur_expr = (dim_equal_unit) ? builder.getAffineConstantExpr(0)
-                                                         : builder.getAffineDimExpr(size_diff + i);
+                                                         : get_affine_expr(size_diff + i);
             input_affine_expr.push_back(cur_expr);
         }
         return input_affine_expr;
@@ -581,6 +577,8 @@ class MLIRGenImpl {
         }
         return {std::move(split_shape), std::move(groups)};
     }
+
+    mlir::AffineExpr get_affine_expr(std::size_t num) { return builder.getAffineDimExpr(num); }
 
 }; // class MLIRGenImpl
 
@@ -657,6 +655,11 @@ mlir::SmallVector<mlir::utils::IteratorType> make_iters(std::size_t n_par, std::
     return iters;
 }
 
+mlir::AffineMap make_map(mlir::OpBuilder &b, std::size_t loops_amount,
+                         mlir::ArrayRef<mlir::AffineExpr> exprs) {
+    return mlir::AffineMap::get(loops_amount, 0, exprs, b.getContext());
+}
+
 mlir::Value make_zero_tensor(mlir::OpBuilder &b, mlir::Location loc,
                              mlir::RankedTensorType out_type) {
     mlir::Value zero = mlir::arith::getZeroConstant(b, loc, out_type.getElementType());
@@ -666,6 +669,7 @@ mlir::Value make_zero_tensor(mlir::OpBuilder &b, mlir::Location loc,
 
     return zeros;
 }
+
 } // namespace
 
 namespace Labs {
