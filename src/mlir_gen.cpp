@@ -1,6 +1,8 @@
 #include "mlir_gen.hpp"
+
 #include "graph.hpp"
 #include "graph_nodes.hpp"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -16,11 +18,11 @@
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
-#include "mlir/IR/Verifier.h"
+
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/FormatVariadic.h"
-#include "llvm/Support/LogicalResult.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -83,7 +85,7 @@ class MLIRGenImpl {
             } else if (op_type == "Gemm") {
                 gen_gemm(*op);
             } else if (op_type == "Conv") {
-                gen_conv(static_cast<Labs::Conv &>(*op));
+                gen_conv(*op);
             } else {
                 throw std::runtime_error("unsupported gen operation now: " + op_type);
             }
@@ -286,15 +288,15 @@ class MLIRGenImpl {
     }
 
     void gen_gemm(const Labs::Op &op) {
-        Value input1 = valueTable.at(op.inputs_[0]);
-        Value input2 = valueTable.at(op.inputs_[1]);
-        RankedTensorType outType = get_type(op.outputs_[0]);
+        const Labs::Gemm &gemm = static_cast<const Labs::Gemm &>(op);
+        Value input1 = valueTable.at(gemm.inputs_[0]);
+        Value input2 = valueTable.at(gemm.inputs_[1]);
+        RankedTensorType outType = get_type(gemm.outputs_[0]);
         Type elem_type = outType.getElementType();
         if (!elem_type.isF32())
-            throw std::runtime_error("Gemm is supported only for f32: " + op.outputs_[0]->name_);
+            throw std::runtime_error("Gemm is supported only for f32: " + gemm.outputs_[0]->name_);
 
-        const Labs::Gemm &gemm = static_cast<const Labs::Gemm &>(op);
-        Value init = gen_gemm_init(op);
+        Value init = gen_gemm_init(gemm);
         SmallVector<utils::IteratorType> iters = make_iters(2, 1);
 
         AffineExpr d0 = get_affine_expr(0);
@@ -336,59 +338,25 @@ class MLIRGenImpl {
         valueTable_insertion(gemm.outputs_[0], generic_res);
     }
 
-    void gen_conv(const Labs::Conv &conv) {
-        Value X = gen_conv_init(conv);
+    void gen_conv(const Labs::Op &op) {
+        const Labs::Conv &conv = static_cast<const Labs::Conv &>(op);
+        Value X = pad_conv_init(conv);
         Value K = valueTable.at(conv.inputs_[1]);
-        int64_t G = conv.group_;
         Location location = convert_str_to_loc(conv.outputs_[0]->name_);
         Type elem_type = getElementTypeOrSelf(X);
         check_supported_type(elem_type);
 
-        RankedTensorType X_padded_type = llvm::cast<RankedTensorType>(X.getType());
-        auto [split_shape_X, split_groups_X] = split_dim(X_padded_type.getShape(), G, 1);
-        RankedTensorType X_split_type = RankedTensorType::get(split_shape_X, elem_type);
-        Value X_new =
-            tensor::ExpandShapeOp::create(builder, location, X_split_type, X, split_groups_X);
-
-        auto [split_shape_K, split_groups_K] = split_dim(conv.inputs_[1]->shape_, G, 0);
-        RankedTensorType K_split_type = RankedTensorType::get(split_shape_K, elem_type);
-        Value K_new =
-            tensor::ExpandShapeOp::create(builder, location, K_split_type, K, split_groups_K);
+        int64_t G = conv.group_;
+        Value X_new = expand_dim(X, G, 1, location);
+        Value K_new = expand_dim(K, G, 0, location);
 
         auto [split_shape_Y, split_groups_y] = split_dim(conv.outputs_[0]->shape_, G, 1);
         RankedTensorType split_Y_type = RankedTensorType::get(split_shape_Y, elem_type);
         Value init = make_zero_tensor(builder, location, split_Y_type);
 
-        std::size_t dims_amount = conv.inputs_[0]->shape_.size() - 2;
-        SmallVector<utils::IteratorType> iters = make_iters(dims_amount + 3, dims_amount + 1);
-
-        SmallVector<AffineExpr> output_exprs;
-        for (std::size_t i = 0; i < 3 + dims_amount; ++i) {
-            output_exprs.push_back(get_affine_expr(i));
-        }
-
-        SmallVector<AffineExpr> K_exprs;
-        K_exprs.push_back(get_affine_expr(1));
-        K_exprs.push_back(get_affine_expr(2));
-        for (std::size_t i = dims_amount + 3; i < 2 * dims_amount + 4; ++i) {
-            K_exprs.push_back(get_affine_expr(i));
-        }
-
-        SmallVector<AffineExpr> X_exprs;
-        X_exprs.push_back(get_affine_expr(0));
-        X_exprs.push_back(get_affine_expr(1));
-        X_exprs.push_back(get_affine_expr(dims_amount + 3));
-        for (std::size_t i = 0; i < dims_amount; ++i) {
-            AffineExpr cur = get_affine_expr(i + 3) * conv.strides_[i] +
-                             get_affine_expr(i + dims_amount + 4) * conv.dilations_[i];
-            X_exprs.push_back(cur);
-        }
-
-        AffineMap out_map, K_map, X_map;
-        out_map = make_map(builder, 2 * dims_amount + 4, output_exprs);
-        K_map = make_map(builder, 2 * dims_amount + 4, K_exprs);
-        X_map = make_map(builder, 2 * dims_amount + 4, X_exprs);
-        SmallVector<AffineMap> maps = {X_map, K_map, out_map};
+        std::size_t spatial_rank = conv.inputs_[0]->shape_.size() - 2;
+        SmallVector<AffineMap> maps = get_conv_maps(conv, spatial_rank);
+        SmallVector<utils::IteratorType> iters = make_iters(spatial_rank + 3, spatial_rank + 1);
 
         auto body = [](OpBuilder &b, Location loc, ValueRange args) {
             Value x = args[0], k = args[1], out = args[2];
@@ -403,34 +371,13 @@ class MLIRGenImpl {
             create_generic(builder, location, {X_new, K_new}, init, maps, iters, body);
         Value Y =
             tensor::CollapseShapeOp::create(builder, location, Y_type, generic_res, split_groups_y);
-        Value table_insertion = Y;
 
-        //------------------------------------------------------------------------------------------
         if (conv.inputs_.size() == 3) {
             Value bias = valueTable.at(conv.inputs_[2]);
-            Value bias_init =
-                tensor::EmptyOp::create(builder, location, Y_type.getShape(), elem_type);
-            SmallVector<utils::IteratorType> bias_iters = make_iters(dims_amount + 2, 0);
-            AffineExpr bias_exprs = get_affine_expr(1);
-
-            AffineMap bias_map = make_map(builder, 2 + dims_amount, bias_exprs);
-            AffineMap Y_map = builder.getMultiDimIdentityMap(2 + dims_amount);
-            AffineMap bias_out_map = Y_map;
-            SmallVector<AffineMap> bias_maps = {Y_map, bias_map, bias_out_map};
-
-            auto bias_body = [](OpBuilder &b, Location loc, ValueRange args) {
-                Value conv_res = args[0], bias = args[1];
-
-                Value add_res = create_add(b, loc, conv_res, bias);
-                linalg::YieldOp::create(b, loc, add_res);
-            };
-
-            Value bias_generic_res = create_generic(builder, location, {Y, bias}, bias_init,
-                                                    bias_maps, bias_iters, bias_body);
-            table_insertion = bias_generic_res;
+            Y = add_conv_bias(Y, bias, location);
         }
 
-        valueTable_insertion(conv.outputs_[0], table_insertion);
+        valueTable_insertion(conv.outputs_[0], Y);
     }
 
     void gen_elementwise(const Labs::Op &op, const BodyBuilder &body) {
@@ -492,7 +439,7 @@ class MLIRGenImpl {
     }
 
     // prepares Value X: if necessary, performs padding
-    Value gen_conv_init(const Labs::Conv &conv) {
+    Value pad_conv_init(const Labs::Conv &conv) {
         bool no_pad = std::ranges::all_of(conv.pads_, [](int64_t p) { return p == 0; });
 
         if (no_pad) {
@@ -519,9 +466,91 @@ class MLIRGenImpl {
         Value pad_value;
         pad_value = arith::getZeroConstant(builder, location, elem_type);
 
-        Value result =
-            tensor::PadOp::create(builder, location, padded_type, x, low, high, pad_value);
-        return result;
+        return tensor::PadOp::create(builder, location, padded_type, x, low, high, pad_value);
+    }
+
+    Value add_conv_bias(Value Y, Value bias, Location loc) {
+        RankedTensorType Y_type = llvm::cast<RankedTensorType>(Y.getType());
+        Value init =
+            tensor::EmptyOp::create(builder, loc, Y_type.getShape(), Y_type.getElementType());
+
+        std::size_t rank = Y_type.getRank();
+        SmallVector<utils::IteratorType> iters = make_iters(rank, 0);
+        AffineExpr expr = get_affine_expr(1);
+
+        AffineMap bias_map = make_map(builder, rank, expr);
+        AffineMap Y_map = builder.getMultiDimIdentityMap(rank);
+        AffineMap out_map = Y_map;
+        SmallVector<AffineMap> bias_maps = {Y_map, bias_map, out_map};
+
+        auto body = [](OpBuilder &b, Location loc, ValueRange args) {
+            Value conv_res = args[0], bias = args[1];
+
+            Value add_res = create_add(b, loc, conv_res, bias);
+            linalg::YieldOp::create(b, loc, add_res);
+        };
+
+        return create_generic(builder, loc, {Y, bias}, init, bias_maps, iters, body);
+    }
+
+    Value expand_dim(Value v, int64_t G, std::size_t pos, Location loc) {
+        RankedTensorType type = llvm::cast<RankedTensorType>(v.getType());
+        auto [split_shape, split_groups] = split_dim(type.getShape(), G, pos);
+        RankedTensorType split_type = RankedTensorType::get(split_shape, type.getElementType());
+
+        return tensor::ExpandShapeOp::create(builder, loc, split_type, v, split_groups);
+    }
+
+    SplitResult split_dim(const std::vector<int64_t> &shape, const std::size_t G,
+                          const std::size_t pos) {
+        std::vector<int64_t> split_shape = shape;
+        split_shape[pos] /= G;
+        split_shape.insert(split_shape.begin() + pos, G);
+
+        SmallVector<ReassociationIndices> groups;
+        for (int64_t i = 0; i < shape.size(); ++i) {
+            if (i < pos) {
+                groups.push_back({i});
+            } else if (i == pos) {
+                groups.push_back({i, i + 1});
+            } else {
+                groups.push_back({i + 1});
+            }
+        }
+        return {std::move(split_shape), std::move(groups)};
+    }
+
+    SmallVector<AffineMap> get_conv_maps(const Labs::Conv &conv, std::size_t spatial_rank) {
+        // counters of conv loop: n->g->f->oh1->oh2->...->ohn->c->kh1->kh2->...->khn
+        const std::size_t n = 0, g = 1, f = 2;
+        const std::size_t first_oh = 3;
+        const std::size_t c = spatial_rank + 3;
+        const std::size_t first_kh = spatial_rank + 4;
+
+        SmallVector<AffineExpr> X_exprs{get_affine_expr(n), get_affine_expr(g), get_affine_expr(c)};
+        for (std::size_t i = 0; i < spatial_rank; ++i) {
+            AffineExpr current = get_affine_expr(i + first_oh) * conv.strides_[i] +
+                                 get_affine_expr(i + first_kh) * conv.dilations_[i];
+
+            X_exprs.push_back(current);
+        }
+
+        SmallVector<AffineExpr> K_exprs{get_affine_expr(g), get_affine_expr(f), get_affine_expr(c)};
+        for (std::size_t i = 0; i < spatial_rank; ++i)
+            K_exprs.push_back(get_affine_expr(first_kh + i));
+
+        SmallVector<AffineExpr> output_exprs{get_affine_expr(n), get_affine_expr(g),
+                                             get_affine_expr(f)};
+        for (std::size_t i = 0; i < spatial_rank; ++i)
+            output_exprs.push_back(get_affine_expr(first_oh + i));
+
+        AffineMap X_map, K_map, output_map;
+        std::size_t loops_amount = 2 * spatial_rank + 4;
+        X_map = make_map(builder, loops_amount, X_exprs);
+        K_map = make_map(builder, loops_amount, K_exprs);
+        output_map = make_map(builder, loops_amount, output_exprs);
+
+        return {X_map, K_map, output_map};
     }
 
     // Full broadcast map over output.size() loop dims.
@@ -547,25 +576,6 @@ class MLIRGenImpl {
             input_affine_expr.push_back(cur_expr);
         }
         return input_affine_expr;
-    }
-
-    SplitResult split_dim(const std::vector<int64_t> &shape, const std::size_t G,
-                          const std::size_t pos) {
-        std::vector<int64_t> split_shape = shape;
-        split_shape[pos] /= G;
-        split_shape.insert(split_shape.begin() + pos, G);
-
-        SmallVector<ReassociationIndices> groups;
-        for (int64_t i = 0; i < shape.size(); ++i) {
-            if (i < pos) {
-                groups.push_back({i});
-            } else if (i == pos) {
-                groups.push_back({i, i + 1});
-            } else {
-                groups.push_back({i + 1});
-            }
-        }
-        return {std::move(split_shape), std::move(groups)};
     }
 
     AffineExpr get_affine_expr(std::size_t num) { return builder.getAffineDimExpr(num); }
@@ -625,7 +635,7 @@ Value create_mul(OpBuilder &b, Location loc, Value x, Value y) {
         return arith::MulFOp::create(b, loc, x, y);
     }
 
-    return arith::MulFOp::create(b, loc, x, y);
+    return arith::MulIOp::create(b, loc, x, y);
 }
 
 Value create_max(OpBuilder &b, Location loc, Value x, Value y) {
