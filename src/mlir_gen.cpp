@@ -32,6 +32,8 @@
 #include <vector>
 
 namespace {
+using BodyBuilder = std::function<void(mlir::OpBuilder &, mlir::Location, mlir::ValueRange)>;
+
 mlir::SmallVector<int64_t> convert_shape_to_mlir(const std::vector<int64_t> &val_shape);
 void check_supported_type(mlir::Type elem_type);
 void check_static_shapes(const Labs::Op *op);
@@ -40,9 +42,12 @@ bool is_dynamic(const Labs::Value *val);
 mlir::Value create_add(mlir::OpBuilder &b, mlir::Location loc, mlir::Value x, mlir::Value y);
 mlir::Value create_mul(mlir::OpBuilder &b, mlir::Location loc, mlir::Value x, mlir::Value y);
 mlir::Value create_max(mlir::OpBuilder &b, mlir::Location loc, mlir::Value x, mlir::Value y);
+mlir::Value create_generic(mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange inputs,
+                           mlir::Value init, mlir::ArrayRef<mlir::AffineMap> maps,
+                           mlir::ArrayRef<mlir::utils::IteratorType> iters,
+                           const BodyBuilder &body);
 
 class MLIRGenImpl {
-    using BodyBuilder = std::function<void(mlir::OpBuilder &, mlir::Location, mlir::ValueRange)>;
     using SplitResult =
         std::pair<std::vector<int64_t>, mlir::SmallVector<mlir::ReassociationIndices>>;
 
@@ -172,8 +177,6 @@ class MLIRGenImpl {
     }
 
     void gen_relu(const Labs::Op &op) {
-        mlir::Type elem_type = get_type(op.outputs_[0]).getElementType();
-
         auto body = [](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
             mlir::Value x = args[0];
             mlir::Value zero = mlir::arith::getZeroConstant(b, loc, x.getType());
@@ -186,8 +189,6 @@ class MLIRGenImpl {
     }
 
     void gen_add(const Labs::Op &op) {
-        mlir::Type elem_type = get_type(op.outputs_[0]).getElementType();
-
         auto body = [](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
             mlir::Value x = args[0], y = args[1];
 
@@ -199,8 +200,6 @@ class MLIRGenImpl {
     }
 
     void gen_mul(const Labs::Op &op) {
-        mlir::Type elem_type = get_type(op.outputs_[0]).getElementType();
-
         auto body = [](mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange args) {
             mlir::Value x = args[0], y = args[1];
 
@@ -286,9 +285,9 @@ class MLIRGenImpl {
             mlir::linalg::YieldOp::create(b, loc, add_res);
         };
 
-        mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
-            builder, location, outType, mlir::ValueRange{input1, input2}, init, maps, iters, body);
-        valueTable_insertion(op.outputs_[0], generic.getResult(0));
+        mlir::Value generic_res =
+            create_generic(builder, location, {input1, input2}, init, maps, iters, body);
+        valueTable_insertion(op.outputs_[0], generic_res);
     }
 
     void gen_gemm(const Labs::Op &op) {
@@ -339,9 +338,9 @@ class MLIRGenImpl {
             mlir::linalg::YieldOp::create(b, loc, add_res);
         };
 
-        mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
-            builder, location, outType, mlir::ValueRange{input1, input2}, init, maps, iters, body);
-        valueTable_insertion(gemm.outputs_[0], generic.getResult(0));
+        mlir::Value generic_res =
+            create_generic(builder, location, {input1, input2}, init, maps, iters, body);
+        valueTable_insertion(gemm.outputs_[0], generic_res);
     }
 
     void gen_conv(const Labs::Conv &conv) {
@@ -414,10 +413,10 @@ class MLIRGenImpl {
         };
 
         mlir::RankedTensorType Y_type = get_type(conv.outputs_[0]);
-        mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
-            builder, location, split_Y_type, {X_new, K_new}, init, maps, iters, body);
+        mlir::Value generic_res =
+            create_generic(builder, location, {X_new, K_new}, init, maps, iters, body);
         mlir::Value Y = mlir::tensor::CollapseShapeOp::create(builder, location, Y_type,
-                                                              generic.getResult(0), split_groups_y);
+                                                              generic_res, split_groups_y);
         mlir::Value table_insertion = Y;
 
         //------------------------------------------------------------------------------------------
@@ -442,15 +441,15 @@ class MLIRGenImpl {
                 mlir::linalg::YieldOp::create(b, loc, add_res);
             };
 
-            mlir::linalg::GenericOp bias_generic = mlir::linalg::GenericOp::create(
-                builder, location, Y_type, {Y, bias}, bias_init, bias_maps, bias_iters, bias_body);
-            table_insertion = bias_generic.getResult(0);
+            mlir::Value bias_generic_res = create_generic(builder, location, {Y, bias}, bias_init,
+                                                          bias_maps, bias_iters, bias_body);
+            table_insertion = bias_generic_res;
         }
 
         valueTable_insertion(conv.outputs_[0], table_insertion);
     }
 
-    void gen_elementwise(const Labs::Op &op, BodyBuilder lambda) {
+    void gen_elementwise(const Labs::Op &op, const BodyBuilder &body) {
         mlir::RankedTensorType outType = get_type(op.outputs_[0]);
         mlir::Type elem_type = outType.getElementType();
         check_supported_type(elem_type);
@@ -473,9 +472,9 @@ class MLIRGenImpl {
         mlir::SmallVector<mlir::utils::IteratorType> iters(rank,
                                                            mlir::utils::IteratorType::parallel);
 
-        mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
-            builder, location, outType, inputs, init, maps, iters, lambda);
-        valueTable_insertion(op.outputs_[0], generic.getResult(0));
+        mlir::Value generic_res =
+            create_generic(builder, location, inputs, init, maps, iters, body);
+        valueTable_insertion(op.outputs_[0], generic_res);
     }
 
     // Prepares mlir::Value equal to the bias of the desired size
@@ -510,9 +509,8 @@ class MLIRGenImpl {
             mlir::linalg::YieldOp::create(b, loc, mul_res);
         };
 
-        mlir::linalg::GenericOp generic = mlir::linalg::GenericOp::create(
-            builder, location, outType, bias, init, maps, iters, body);
-        return generic.getResult(0);
+        mlir::Value generic_res = create_generic(builder, location, bias, init, maps, iters, body);
+        return generic_res;
     }
 
     // prepares mlir::Value X: if necessary, performs padding
@@ -624,6 +622,17 @@ void check_supported_type(mlir::Type elem_type) {
         throw std::runtime_error(
             llvm::formatv("Unsupported type of elements: {0}", elem_type).str());
     }
+}
+
+mlir::Value create_generic(mlir::OpBuilder &b, mlir::Location loc, mlir::ValueRange inputs,
+                           mlir::Value init, mlir::ArrayRef<mlir::AffineMap> maps,
+                           mlir::ArrayRef<mlir::utils::IteratorType> iters,
+                           const BodyBuilder &body) {
+    mlir::linalg::GenericOp generic =
+        mlir::linalg::GenericOp::create(b, loc, init.getType(), inputs, init, maps, iters, body);
+    mlir::Value generic_res = generic.getResult(0);
+
+    return generic_res;
 }
 
 mlir::Value create_add(mlir::OpBuilder &b, mlir::Location loc, mlir::Value x, mlir::Value y) {
