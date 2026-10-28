@@ -55,11 +55,10 @@ Value create_generic(OpBuilder &b, Location loc, ValueRange inputs, Value init,
 
 SmallVector<utils::IteratorType> make_iters(std::size_t n_par, std::size_t n_red);
 AffineMap make_map(OpBuilder &b, std::size_t loops_amount, ArrayRef<AffineExpr> exprs);
-Value make_empty_tensor(OpBuilder &b, Location loc, RankedTensorType out_type);
-Value make_zero_tensor(OpBuilder &b, Location loc, RankedTensorType out_type);
+Value make_empty_tensor(OpBuilder &b, Location loc, RankedTensorType type);
+Value make_zero_tensor(OpBuilder &b, Location loc, RankedTensorType type);
 
 class MLIRGenImpl final {
-
   public:
     explicit MLIRGenImpl(MLIRContext &context) : builder_(&context) {}
 
