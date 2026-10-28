@@ -37,9 +37,11 @@
 using namespace mlir;
 
 namespace {
+using SplitResult = std::pair<std::vector<int64_t>, SmallVector<ReassociationIndices>>;
 using BodyBuilder = std::function<void(OpBuilder &, Location, ValueRange)>;
 
 SmallVector<int64_t> convert_shape_to_mlir(const std::vector<int64_t> &val_shape);
+SplitResult split_dim(ArrayRef<int64_t> shape, int64_t G, std::size_t pos);
 void check_supported_type(Type elem_type);
 void check_static_shapes(const Labs::Op *op);
 bool is_dynamic(const Labs::Value *val);
@@ -53,13 +55,13 @@ Value create_generic(OpBuilder &b, Location loc, ValueRange inputs, Value init,
 
 SmallVector<utils::IteratorType> make_iters(std::size_t n_par, std::size_t n_red);
 AffineMap make_map(OpBuilder &b, std::size_t loops_amount, ArrayRef<AffineExpr> exprs);
+Value make_empty_tensor(OpBuilder &b, Location loc, RankedTensorType out_type);
 Value make_zero_tensor(OpBuilder &b, Location loc, RankedTensorType out_type);
 
-class MLIRGenImpl {
-    using SplitResult = std::pair<std::vector<int64_t>, SmallVector<ReassociationIndices>>;
+class MLIRGenImpl final {
 
   public:
-    MLIRGenImpl(MLIRContext &context) : builder(&context) {}
+    explicit MLIRGenImpl(MLIRContext &context) : builder(&context) {}
 
     OwningOpRef<ModuleOp> mlirGen(const Labs::ONNX_Graph &my_graph) {
         OwningOpRef owner = ModuleOp::create(builder.getUnknownLoc());
@@ -100,6 +102,7 @@ class MLIRGenImpl {
         return owner;
     }
 
+  private:
     func::FuncOp create_main(const std::vector<Labs::Value *> &inputs,
                              const std::vector<Labs::Value *> &outputs) {
         Location location = convert_str_to_loc("onnx_graph");
@@ -120,7 +123,6 @@ class MLIRGenImpl {
         return main;
     }
 
-  private:
     ModuleOp theModule;
     OpBuilder builder;
     std::unordered_map<const Labs::Value *, Value> valueTable;
@@ -258,7 +260,7 @@ class MLIRGenImpl {
         Location location = convert_str_to_loc(gemm.outputs_[0]->name_);
         Value alpha =
             arith::ConstantOp::create(builder, location, builder.getF32FloatAttr(gemm.alpha_));
-        Value init = get_gemm_init(gemm);
+        Value init = make_gemm_init(gemm);
 
         auto body = [alpha](OpBuilder &b, Location loc, ValueRange args) {
             Value x = args[0], y = args[1], out = args[2];
@@ -341,26 +343,23 @@ class MLIRGenImpl {
         valueTable_insertion(op.outputs_[0], generic_res);
     }
 
-    // Prepares Value equal to the bias of the desired size
-    Value get_gemm_init(const Labs::Op &op) {
-        RankedTensorType outType = get_type(op.outputs_[0]);
-        Type elem_type = outType.getElementType();
-        Location location = convert_str_to_loc(op.outputs_[0]->name_);
+    // Initial accumulator for Gemm: beta * C broadcast to the output shape,
+    // or a zero tensor if C is absent.
+    Value make_gemm_init(const Labs::Gemm &gemm) {
+        RankedTensorType outType = get_type(gemm.outputs_[0]);
+        Location location = convert_str_to_loc(gemm.outputs_[0]->name_);
 
-        if (op.inputs_.size() == 2) {
-            Value zeros = make_zero_tensor(builder, location, outType);
+        if (gemm.inputs_.size() == 2)
+            return make_zero_tensor(builder, location, outType);
 
-            return zeros;
-        }
-
-        Value init = tensor::EmptyOp::create(builder, location, outType.getShape(), elem_type);
-        Value bias = valueTable.at(op.inputs_[2]);
-        AffineMap bias_map = get_broadcast_map(op.inputs_[2]->shape_, op.outputs_[0]->shape_);
-        AffineMap output_map = builder.getMultiDimIdentityMap(op.outputs_[0]->shape_.size());
+        const std::vector<int64_t> &out_shape = gemm.outputs_[0]->shape_;
+        Value bias = valueTable.at(gemm.inputs_[2]);
+        AffineMap bias_map = get_broadcast_map(gemm.inputs_[2]->shape_, out_shape);
+        AffineMap output_map = builder.getMultiDimIdentityMap(out_shape.size());
         SmallVector<AffineMap> maps = {bias_map, output_map};
-        SmallVector<utils::IteratorType> iters = make_iters(op.outputs_[0]->shape_.size(), 0);
+        SmallVector<utils::IteratorType> iters = make_iters(out_shape.size(), 0);
 
-        const Labs::Gemm &gemm = static_cast<const Labs::Gemm &>(op);
+        Value init = make_empty_tensor(builder, location, outType);
         Value beta =
             arith::ConstantOp::create(builder, location, builder.getF32FloatAttr(gemm.beta_));
 
@@ -371,38 +370,39 @@ class MLIRGenImpl {
             linalg::YieldOp::create(b, loc, mul_res);
         };
 
-        Value generic_res = create_generic(builder, location, bias, init, maps, iters, body);
-        return generic_res;
+        return create_generic(builder, location, bias, init, maps, iters, body);
     }
 
     // prepares Value X: if necessary, performs padding
     Value pad_conv_init(const Labs::Conv &conv) {
+        const Labs::Value *labs_x = conv.inputs_[0];
+        Value x = valueTable.at(labs_x);
+
         bool no_pad = std::ranges::all_of(conv.pads_, [](int64_t p) { return p == 0; });
+        if (no_pad)
+            return x;
 
-        if (no_pad) {
-            return valueTable.at(conv.inputs_[0]);
-        }
-
-        std::size_t spatial_rank = conv.inputs_[0]->shape_.size() - 2;
-        std::vector<int64_t> padded_shape = conv.inputs_[0]->shape_;
+        std::size_t spatial_rank = labs_x->shape_.size() - 2;
+        std::vector<int64_t> padded_shape = labs_x->shape_;
         std::vector<int64_t> low_ints = {0, 0}, high_ints = {0, 0};
 
         for (std::size_t i = 0; i < spatial_rank; ++i) {
-            padded_shape[2 + i] += conv.pads_[i];
-            padded_shape[2 + i] += conv.pads_[i + spatial_rank];
-            low_ints.push_back(conv.pads_[i]);
-            high_ints.push_back(conv.pads_[i + spatial_rank]);
+            int64_t begin = conv.pads_[i];
+            int64_t end = conv.pads_[spatial_rank + i];
+
+            padded_shape[2 + i] += (begin + end);
+            low_ints.push_back(begin);
+            high_ints.push_back(end);
         }
 
-        RankedTensorType temp_type = get_type(conv.inputs_[0]);
-        Type elem_type = temp_type.getElementType();
+        Type elem_type = getElementTypeOrSelf(x);
         RankedTensorType padded_type = RankedTensorType::get(padded_shape, elem_type);
-        Location location = convert_str_to_loc(conv.outputs_[0]->name_);
-        Value x = valueTable.at(conv.inputs_[0]);
+
         auto low = getAsIndexOpFoldResult(builder.getContext(), low_ints);
         auto high = getAsIndexOpFoldResult(builder.getContext(), high_ints);
-        Value pad_value;
-        pad_value = arith::getZeroConstant(builder, location, elem_type);
+
+        Location location = convert_str_to_loc(conv.outputs_[0]->name_);
+        Value pad_value = arith::getZeroConstant(builder, location, elem_type);
 
         return tensor::PadOp::create(builder, location, padded_type, x, low, high, pad_value);
     }
@@ -437,25 +437,6 @@ class MLIRGenImpl {
         RankedTensorType split_type = RankedTensorType::get(split_shape, type.getElementType());
 
         return tensor::ExpandShapeOp::create(builder, loc, split_type, v, split_groups);
-    }
-
-    SplitResult split_dim(const std::vector<int64_t> &shape, const std::size_t G,
-                          const std::size_t pos) {
-        std::vector<int64_t> split_shape = shape;
-        split_shape[pos] /= G;
-        split_shape.insert(split_shape.begin() + pos, G);
-
-        SmallVector<ReassociationIndices> groups;
-        for (int64_t i = 0; i < shape.size(); ++i) {
-            if (i < pos) {
-                groups.push_back({i});
-            } else if (i == pos) {
-                groups.push_back({i, i + 1});
-            } else {
-                groups.push_back({i + 1});
-            }
-        }
-        return {std::move(split_shape), std::move(groups)};
     }
 
     SmallVector<AffineMap> make_matmul_maps(const Labs::Op &op, std::size_t rank) {
@@ -600,6 +581,24 @@ SmallVector<int64_t> convert_shape_to_mlir(const std::vector<int64_t> &val_shape
     return shape;
 }
 
+SplitResult split_dim(ArrayRef<int64_t> shape, int64_t G, std::size_t pos) {
+    std::vector<int64_t> split_shape = shape;
+    split_shape[pos] /= G;
+    split_shape.insert(split_shape.begin() + pos, G);
+
+    SmallVector<ReassociationIndices> groups;
+    for (int64_t i = 0; i < shape.size(); ++i) {
+        if (i < pos) {
+            groups.push_back({i});
+        } else if (i == pos) {
+            groups.push_back({i, i + 1});
+        } else {
+            groups.push_back({i + 1});
+        }
+    }
+    return {std::move(split_shape), std::move(groups)};
+}
+
 bool is_dynamic(const Labs::Value *val) {
     auto dynamic_it = std::find(val->shape_.begin(), val->shape_.end(), -1);
     return (dynamic_it != val->shape_.end());
@@ -668,9 +667,13 @@ AffineMap make_map(OpBuilder &b, std::size_t loops_amount, ArrayRef<AffineExpr> 
     return AffineMap::get(loops_amount, 0, exprs, b.getContext());
 }
 
+Value make_empty_tensor(OpBuilder &b, Location loc, RankedTensorType out_type) {
+    return tensor::EmptyOp::create(b, loc, out_type.getShape(), out_type.getElementType());
+}
+
 Value make_zero_tensor(OpBuilder &b, Location loc, RankedTensorType out_type) {
     Value zero = arith::getZeroConstant(b, loc, out_type.getElementType());
-    Value empty = tensor::EmptyOp::create(b, loc, out_type.getShape(), out_type.getElementType());
+    Value empty = make_empty_tensor(b, loc, out_type);
     Value zeros = linalg::FillOp::create(b, loc, out_type, zero, empty).getResult(0);
 
     return zeros;
