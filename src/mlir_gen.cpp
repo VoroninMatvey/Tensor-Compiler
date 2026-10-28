@@ -221,14 +221,13 @@ class MLIRGenImpl {
         Value input1 = valueTable.at(op.inputs_[0]);
         Value input2 = valueTable.at(op.inputs_[1]);
         RankedTensorType outType = get_type(op.outputs_[0]);
-        Type elem_type = outType.getElementType();
-        check_supported_type(elem_type);
+        check_supported_type(outType.getElementType());
 
         std::size_t rank = op.outputs_[0]->shape_.size();
         Location location = convert_str_to_loc(op.outputs_[0]->name_);
         Value init = make_zero_tensor(builder, location, outType);
 
-        SmallVector<AffineMap> maps = get_matmul_maps(op, rank);
+        SmallVector<AffineMap> maps = make_matmul_maps(op, rank);
         SmallVector<utils::IteratorType> iters = make_iters(rank, 1);
 
         auto body = [](OpBuilder &b, Location loc, ValueRange args) {
@@ -253,33 +252,13 @@ class MLIRGenImpl {
         if (!elem_type.isF32())
             throw std::runtime_error("Gemm is supported only for f32: " + gemm.outputs_[0]->name_);
 
-        Value init = gen_gemm_init(gemm);
+        SmallVector<AffineMap> maps = make_gemm_maps(gemm);
         SmallVector<utils::IteratorType> iters = make_iters(2, 1);
-
-        AffineExpr d0 = get_affine_expr(0);
-        AffineExpr d1 = get_affine_expr(1);
-        AffineExpr d2 = get_affine_expr(2);
-        SmallVector<AffineExpr> input1_exprs, input2_exprs, output_exprs;
-        output_exprs = {d0, d1};
-        if (gemm.need_transA_) {
-            input1_exprs = {d2, d0};
-        } else {
-            input1_exprs = {d0, d2};
-        }
-        if (gemm.need_transB_) {
-            input2_exprs = {d1, d2};
-        } else {
-            input2_exprs = {d2, d1};
-        }
-
-        AffineMap input1_map = make_map(builder, 3, input1_exprs);
-        AffineMap input2_map = make_map(builder, 3, input2_exprs);
-        AffineMap output_map = make_map(builder, 3, output_exprs);
-        SmallVector<AffineMap> maps = {input1_map, input2_map, output_map};
 
         Location location = convert_str_to_loc(gemm.outputs_[0]->name_);
         Value alpha =
             arith::ConstantOp::create(builder, location, builder.getF32FloatAttr(gemm.alpha_));
+        Value init = get_gemm_init(gemm);
 
         auto body = [alpha](OpBuilder &b, Location loc, ValueRange args) {
             Value x = args[0], y = args[1], out = args[2];
@@ -312,7 +291,7 @@ class MLIRGenImpl {
         Value init = make_zero_tensor(builder, location, split_Y_type);
 
         std::size_t spatial_rank = conv.inputs_[0]->shape_.size() - 2;
-        SmallVector<AffineMap> maps = get_conv_maps(conv, spatial_rank);
+        SmallVector<AffineMap> maps = make_conv_maps(conv, spatial_rank);
         SmallVector<utils::IteratorType> iters = make_iters(spatial_rank + 3, spatial_rank + 1);
 
         auto body = [](OpBuilder &b, Location loc, ValueRange args) {
@@ -363,7 +342,7 @@ class MLIRGenImpl {
     }
 
     // Prepares Value equal to the bias of the desired size
-    Value gen_gemm_init(const Labs::Op &op) {
+    Value get_gemm_init(const Labs::Op &op) {
         RankedTensorType outType = get_type(op.outputs_[0]);
         Type elem_type = outType.getElementType();
         Location location = convert_str_to_loc(op.outputs_[0]->name_);
@@ -384,6 +363,7 @@ class MLIRGenImpl {
         const Labs::Gemm &gemm = static_cast<const Labs::Gemm &>(op);
         Value beta =
             arith::ConstantOp::create(builder, location, builder.getF32FloatAttr(gemm.beta_));
+
         auto body = [beta](OpBuilder &b, Location loc, ValueRange args) {
             Value bias = args[0];
 
@@ -406,6 +386,7 @@ class MLIRGenImpl {
         std::size_t spatial_rank = conv.inputs_[0]->shape_.size() - 2;
         std::vector<int64_t> padded_shape = conv.inputs_[0]->shape_;
         std::vector<int64_t> low_ints = {0, 0}, high_ints = {0, 0};
+
         for (std::size_t i = 0; i < spatial_rank; ++i) {
             padded_shape[2 + i] += conv.pads_[i];
             padded_shape[2 + i] += conv.pads_[i + spatial_rank];
@@ -433,12 +414,12 @@ class MLIRGenImpl {
 
         std::size_t rank = Y_type.getRank();
         SmallVector<utils::IteratorType> iters = make_iters(rank, 0);
-        AffineExpr expr = get_affine_expr(1);
+        AffineExpr bias_expr = get_affine_expr(1);
 
-        AffineMap bias_map = make_map(builder, rank, expr);
+        AffineMap bias_map = make_map(builder, rank, bias_expr);
         AffineMap Y_map = builder.getMultiDimIdentityMap(rank);
         AffineMap out_map = Y_map;
-        SmallVector<AffineMap> bias_maps = {Y_map, bias_map, out_map};
+        SmallVector<AffineMap> maps = {Y_map, bias_map, out_map};
 
         auto body = [](OpBuilder &b, Location loc, ValueRange args) {
             Value conv_res = args[0], bias = args[1];
@@ -447,7 +428,7 @@ class MLIRGenImpl {
             linalg::YieldOp::create(b, loc, add_res);
         };
 
-        return create_generic(builder, loc, {Y, bias}, init, bias_maps, iters, body);
+        return create_generic(builder, loc, {Y, bias}, init, maps, iters, body);
     }
 
     Value expand_dim(Value v, int64_t G, std::size_t pos, Location loc) {
@@ -477,7 +458,7 @@ class MLIRGenImpl {
         return {std::move(split_shape), std::move(groups)};
     }
 
-    SmallVector<AffineMap> get_matmul_maps(const Labs::Op &op, std::size_t rank) {
+    SmallVector<AffineMap> make_matmul_maps(const Labs::Op &op, std::size_t rank) {
         const std::vector<int64_t> &a_shape = op.inputs_[0]->shape_;
         const std::vector<int64_t> &b_shape = op.inputs_[1]->shape_;
         const std::vector<int64_t> &out_shape = op.outputs_[0]->shape_;
@@ -522,7 +503,34 @@ class MLIRGenImpl {
         return {input1_map, input2_map, output_map};
     }
 
-    SmallVector<AffineMap> get_conv_maps(const Labs::Conv &conv, std::size_t spatial_rank) {
+    SmallVector<AffineMap> make_gemm_maps(const Labs::Gemm &gemm) {
+        // C[i, j] += alpha * A[i, k] * B[k, j] (A and B may be transposed)
+        // i -> j -> k
+        AffineExpr i = get_affine_expr(0);
+        AffineExpr j = get_affine_expr(1);
+        AffineExpr k = get_affine_expr(2);
+
+        SmallVector<AffineExpr> input1_exprs, input2_exprs;
+        if (gemm.need_transA_) {
+            input1_exprs = {k, i};
+        } else {
+            input1_exprs = {i, k};
+        }
+
+        if (gemm.need_transB_) {
+            input2_exprs = {j, k};
+        } else {
+            input2_exprs = {k, j};
+        }
+
+        AffineMap input1_map = make_map(builder, 3, input1_exprs);
+        AffineMap input2_map = make_map(builder, 3, input2_exprs);
+        AffineMap output_map = make_map(builder, 3, {i, j});
+
+        return {input1_map, input2_map, output_map};
+    }
+
+    SmallVector<AffineMap> make_conv_maps(const Labs::Conv &conv, std::size_t spatial_rank) {
         // counters of conv loop: n->g->f->oh1->oh2->...->ohn->c->kh1->kh2->...->khn
         const std::size_t n = 0, g = 1, f = 2;
         const std::size_t first_oh = 3;
