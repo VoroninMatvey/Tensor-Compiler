@@ -38,6 +38,11 @@ target_link_libraries(tc_backend PUBLIC
     MLIRArithDialect
     MLIRTensorDialect
     MLIRLinalgDialect
+    MLIRPass
+    MLIRBufferizationTransforms
+    MLIRArithTransforms
+    MLIRLinalgTransforms
+    MLIRTensorTransforms
 )
 target_compile_definitions(tc_backend PUBLIC ${LLVM_DEFINITIONS_LIST})
 

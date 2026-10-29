@@ -1,7 +1,9 @@
+#include "backend/lowering.hpp"
 #include "backend/mlir_gen.hpp"
 #include "frontend/graph.hpp"
 #include "frontend/graph_builder.hpp"
 #include "frontend/importer.hpp"
+
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -9,6 +11,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
+
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -52,6 +55,7 @@ int main(int argc, char *argv[]) {
         context.loadDialect<mlir::func::FuncDialect, mlir::arith::ArithDialect,
                             mlir::linalg::LinalgDialect, mlir::tensor::TensorDialect>();
         mlir::OwningOpRef<mlir::ModuleOp> module = Labs::mlirGen(context, my_graph);
+        Labs::lower_to_llvm(*module);
         module->dump();
         //----------------------------
 
