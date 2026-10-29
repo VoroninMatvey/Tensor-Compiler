@@ -1,6 +1,7 @@
-#include "graph.hpp"
-#include "graph_builder.hpp"
-#include "importer.hpp"
+#include "backend/mlir_gen.hpp"
+#include "frontend/graph.hpp"
+#include "frontend/graph_builder.hpp"
+#include "frontend/importer.hpp"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -8,7 +9,6 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
-#include "mlir_gen.hpp"
 #include <cstring>
 #include <filesystem>
 #include <iostream>

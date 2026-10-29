@@ -1,5 +1,5 @@
-#include "shape_inference.hpp"
-#include "graph_nodes.hpp"
+#include "frontend/shape_inference.hpp"
+#include "frontend/graph_nodes.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <stdexcept>

@@ -1,5 +1,5 @@
 #pragma once
-#include "graph_nodes.hpp"
+#include "frontend/graph_nodes.hpp"
 #include <cstdint>
 #include <string_view>
 #include <vector>

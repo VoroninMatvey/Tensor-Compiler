@@ -1,4 +1,4 @@
-#include "graph_builder.hpp"
+#include "frontend/graph_builder.hpp"
 #include <cstdint>
 #include <filesystem>
 #include <format>

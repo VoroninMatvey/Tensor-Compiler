@@ -1,8 +1,8 @@
-#include "importer.hpp"
-#include "graph.hpp"
-#include "graph_nodes.hpp"
+#include "frontend/importer.hpp"
+#include "frontend/graph.hpp"
+#include "frontend/graph_nodes.hpp"
+#include "frontend/shape_inference.hpp"
 #include "onnx.pb.h"
-#include "shape_inference.hpp"
 #include <cstring>
 #include <fstream>
 #include <stdexcept>

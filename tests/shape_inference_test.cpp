@@ -1,4 +1,4 @@
-#include "shape_inference.hpp"
+#include "frontend/shape_inference.hpp"
 #include <cstdint>
 #include <gtest/gtest.h>
 #include <initializer_list>

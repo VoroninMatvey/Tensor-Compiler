@@ -1,5 +1,5 @@
 #pragma once
-#include "graph.hpp"
+#include "frontend/graph.hpp"
 #include <string>
 
 namespace Labs {

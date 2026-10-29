@@ -1,7 +1,7 @@
-#include "mlir_gen.hpp"
+#include "backend/mlir_gen.hpp"
 
-#include "graph.hpp"
-#include "graph_nodes.hpp"
+#include "frontend/graph.hpp"
+#include "frontend/graph_nodes.hpp"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

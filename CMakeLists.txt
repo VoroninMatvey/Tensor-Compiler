@@ -7,30 +7,31 @@ find_package(Protobuf REQUIRED)
 protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS third_party/onnx.proto)
 
 find_package(MLIR REQUIRED CONFIG)
-separate_arguments(LLVM_DEFENITIONS_LIST NATIVE_COMMAND ${LLVM_DEFENITIONS})
+separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
 
-set(SRC src/main.cpp)
+set(SRC src/driver/main.cpp)
 set(PROJECT_ROOT_DEF PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
 
 add_library(tc_frontend STATIC
-    src/importer.cpp
-    src/shape_inference.cpp
-    src/graph_builder.cpp
+    src/frontend/importer.cpp
+    src/frontend/shape_inference.cpp
+    src/frontend/graph_builder.cpp
     ${PROTO_SRCS}
 )
 
 target_include_directories(tc_frontend PUBLIC "include" ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(tc_frontend PRIVATE protobuf::libprotobuf)
 
-add_library(tc_mlirgen STATIC
-    src/mlir_gen.cpp
+add_library(tc_backend STATIC
+    src/backend/mlir_gen.cpp
+    src/backend/lowering.cpp
 )
 
-target_include_directories(tc_mlirgen SYSTEM PUBLIC
+target_include_directories(tc_backend SYSTEM PUBLIC
     ${LLVM_INCLUDE_DIRS}
     ${MLIR_INCLUDE_DIRS}
 )
-target_link_libraries(tc_mlirgen PUBLIC
+target_link_libraries(tc_backend PUBLIC
     tc_frontend
     MLIRIR
     MLIRFuncDialect
@@ -38,10 +39,10 @@ target_link_libraries(tc_mlirgen PUBLIC
     MLIRTensorDialect
     MLIRLinalgDialect
 )
-target_compile_definitions(tc_mlirgen PUBLIC ${LLVM_DEFENITIONS_LIST})
+target_compile_definitions(tc_backend PUBLIC ${LLVM_DEFINITIONS_LIST})
 
 add_executable(${PROJECT_NAME} ${SRC})
-target_link_libraries(${PROJECT_NAME} PRIVATE tc_mlirgen)
+target_link_libraries(${PROJECT_NAME} PRIVATE tc_backend)
 target_compile_definitions(${PROJECT_NAME} PRIVATE ${PROJECT_ROOT_DEF})
 
 enable_testing()
