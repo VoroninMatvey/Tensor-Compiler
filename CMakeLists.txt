@@ -40,9 +40,17 @@ target_link_libraries(tc_backend PUBLIC
     MLIRLinalgDialect
     MLIRPass
     MLIRBufferizationTransforms
+    MLIRTensorInferTypeOpInterfaceImpl
     MLIRArithTransforms
     MLIRLinalgTransforms
     MLIRTensorTransforms
+    MLIRAffineToStandard
+    MLIRCAPIConversion
+    MLIRMemRefToLLVM
+    MLIRArithToLLVM
+    MLIRControlFlowToLLVM
+    MLIRFuncToLLVM
+    MLIRReconcileUnrealizedCasts
 )
 target_compile_definitions(tc_backend PUBLIC ${LLVM_DEFINITIONS_LIST})
 
