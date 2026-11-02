@@ -25,6 +25,7 @@ target_link_libraries(tc_frontend PRIVATE protobuf::libprotobuf)
 add_library(tc_backend STATIC
     src/backend/mlir_gen.cpp
     src/backend/lowering.cpp
+    src/backend/codegen.cpp
 )
 
 target_include_directories(tc_backend SYSTEM PUBLIC
@@ -51,6 +52,9 @@ target_link_libraries(tc_backend PUBLIC
     MLIRControlFlowToLLVM
     MLIRFuncToLLVM
     MLIRReconcileUnrealizedCasts
+    MLIRTargetLLVMIRExport
+    MLIRBuiltinToLLVMIRTranslation
+    MLIRLLVMToLLVMIRTranslation
 )
 target_compile_definitions(tc_backend PUBLIC ${LLVM_DEFINITIONS_LIST})
 

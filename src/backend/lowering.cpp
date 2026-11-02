@@ -23,7 +23,9 @@
 #include <stdexcept>
 
 namespace {
-void register_bufferization_models(mlir::MLIRContext &context) {
+// Registers buffering rules for the func, arith, linalg, and tensor dialects, as well as the output
+// shape of the tensor.
+void register_external_models(mlir::MLIRContext &context) {
     mlir::DialectRegistry registry;
     mlir::bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(registry);
     mlir::tensor::registerInferTypeOpInterfaceExternalModels(registry);
@@ -37,8 +39,8 @@ void register_bufferization_models(mlir::MLIRContext &context) {
 
 namespace Labs {
 void lower_to_llvm(mlir::ModuleOp module) {
+    register_external_models(*module.getContext());
     mlir::PassManager pm(module.getContext());
-    register_bufferization_models(*module.getContext());
 
     mlir::bufferization::OneShotBufferizePassOptions buf_opts;
     buf_opts.bufferizeFunctionBoundaries = true;

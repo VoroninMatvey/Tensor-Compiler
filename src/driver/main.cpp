@@ -1,8 +1,12 @@
+#include "backend/codegen.hpp"
 #include "backend/lowering.hpp"
 #include "backend/mlir_gen.hpp"
 #include "frontend/graph.hpp"
 #include "frontend/graph_builder.hpp"
 #include "frontend/importer.hpp"
+
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -15,6 +19,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -56,7 +61,13 @@ int main(int argc, char *argv[]) {
                             mlir::linalg::LinalgDialect, mlir::tensor::TensorDialect>();
         mlir::OwningOpRef<mlir::ModuleOp> module = Labs::mlirGen(context, my_graph);
         Labs::lower_to_llvm(*module);
-        module->dump();
+        // module->dump();
+        // std::cout << std::endl;
+
+        llvm::LLVMContext llvm_context;
+        std::unique_ptr<llvm::Module> llvm_module =
+            Labs::translate_to_llvm_ir(module.get(), llvm_context);
+        llvm_module->print(llvm::outs(), nullptr);
         //----------------------------
 
         if (has_draw_flag(argc, argv)) {
