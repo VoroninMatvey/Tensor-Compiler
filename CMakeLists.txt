@@ -8,6 +8,7 @@ protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS third_party/onnx.proto)
 
 find_package(MLIR REQUIRED CONFIG)
 separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND ${LLVM_DEFINITIONS})
+llvm_map_components_to_libnames(LLVM_CODEGEN_LIBS native)
 
 set(SRC src/driver/main.cpp)
 set(PROJECT_ROOT_DEF PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
@@ -55,6 +56,7 @@ target_link_libraries(tc_backend PUBLIC
     MLIRTargetLLVMIRExport
     MLIRBuiltinToLLVMIRTranslation
     MLIRLLVMToLLVMIRTranslation
+    ${LLVM_CODEGEN_LIBS}
 )
 target_compile_definitions(tc_backend PUBLIC ${LLVM_DEFINITIONS_LIST})
 

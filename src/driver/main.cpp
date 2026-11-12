@@ -7,6 +7,7 @@
 
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Target/TargetMachine.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -67,6 +68,10 @@ int main(int argc, char *argv[]) {
         llvm::LLVMContext llvm_context;
         std::unique_ptr<llvm::Module> llvm_module =
             Labs::translate_to_llvm_ir(module.get(), llvm_context);
+        Labs::init_llvm_targets();
+        std::unique_ptr<llvm::TargetMachine> tm = Labs::create_target_machine();
+        /*llvm::errs() << "triple: " << tm->getTargetTriple().str() << "\n"
+                     << "cpu:    " << tm->getTargetCPU() << "\n";*/
         llvm_module->print(llvm::outs(), nullptr);
         //----------------------------
 

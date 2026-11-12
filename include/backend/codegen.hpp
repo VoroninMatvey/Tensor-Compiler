@@ -4,6 +4,7 @@
 namespace llvm {
 class Module;
 class LLVMContext;
+class TargetMachine;
 } // namespace llvm
 
 namespace mlir {
@@ -13,4 +14,6 @@ class ModuleOp;
 namespace Labs {
 std::unique_ptr<llvm::Module> translate_to_llvm_ir(mlir::ModuleOp module,
                                                    llvm::LLVMContext &llvm_context);
+std::unique_ptr<llvm::TargetMachine> create_target_machine();
+void init_llvm_targets();
 } // namespace Labs
