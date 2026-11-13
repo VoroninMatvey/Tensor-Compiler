@@ -70,8 +70,7 @@ int main(int argc, char *argv[]) {
             Labs::translate_to_llvm_ir(module.get(), llvm_context);
         Labs::init_llvm_targets();
         std::unique_ptr<llvm::TargetMachine> tm = Labs::create_target_machine();
-        /*llvm::errs() << "triple: " << tm->getTargetTriple().str() << "\n"
-                     << "cpu:    " << tm->getTargetCPU() << "\n";*/
+        Labs::optimize_llvm_ir(*llvm_module, tm.get(), 3);
         llvm_module->print(llvm::outs(), nullptr);
         //----------------------------
 

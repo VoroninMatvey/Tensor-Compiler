@@ -1,8 +1,14 @@
 #include "backend/codegen.hpp"
 
+#include "llvm/Analysis/CGSCCPassManager.h"
+#include "llvm/Analysis/LoopAnalysisManager.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/Passes/OptimizationLevel.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
@@ -25,7 +31,7 @@ namespace Labs {
 std::unique_ptr<llvm::Module> translate_to_llvm_ir(mlir::ModuleOp module,
                                                    llvm::LLVMContext &llvm_context) {
     mlir::registerBuiltinDialectTranslation(*module.getContext());
-    mlir::registerLLVMDialectTranslation(*module->getContext());
+    mlir::registerLLVMDialectTranslation(*module.getContext());
 
     std::unique_ptr<llvm::Module> llvm_module = mlir::translateModuleToLLVMIR(module, llvm_context);
 
@@ -58,4 +64,53 @@ std::unique_ptr<llvm::TargetMachine> create_target_machine() {
     return std::unique_ptr<llvm::TargetMachine>(
         target->createTargetMachine(triple, cpu, features.getString(), options, llvm::Reloc::PIC_));
 }
+
+void optimize_llvm_ir(llvm::Module &module, llvm::TargetMachine *tm, int opt_level) {
+    if (!tm)
+        throw std::runtime_error("TargetMachine pointer is nullptr");
+
+    module.setTargetTriple(tm->getTargetTriple());
+    module.setDataLayout(tm->createDataLayout());
+
+    if (opt_level == 0)
+        return;
+
+    llvm::OptimizationLevel level;
+    switch (opt_level) {
+    case 1:
+        level = llvm::OptimizationLevel::O1;
+        break;
+    case 2:
+        level = llvm::OptimizationLevel::O2;
+        break;
+    case 3:
+        level = llvm::OptimizationLevel::O3;
+        break;
+    default:
+        throw std::runtime_error("Invalid optimization level: " + std::to_string(opt_level));
+    }
+
+    llvm::LoopAnalysisManager lam;
+    llvm::FunctionAnalysisManager fam;
+    llvm::CGSCCAnalysisManager cgam;
+    llvm::ModuleAnalysisManager mam;
+
+    llvm::PipelineTuningOptions pto;
+    pto.LoopVectorization = opt_level > 1;
+    pto.SLPVectorization = opt_level > 1;
+
+    llvm::PassBuilder pb(tm, pto);
+    pb.registerLoopAnalyses(lam);
+    pb.registerFunctionAnalyses(fam);
+    pb.registerCGSCCAnalyses(cgam);
+    pb.registerModuleAnalyses(mam);
+    pb.crossRegisterProxies(lam, fam, cgam, mam);
+
+    llvm::ModulePassManager mpm = pb.buildPerModuleDefaultPipeline(level);
+    mpm.run(module, mam);
+
+    if (llvm::verifyModule(module, &llvm::errs()))
+        throw std::runtime_error("LLVM Moule was broken after optimization");
+}
+
 } // namespace Labs
