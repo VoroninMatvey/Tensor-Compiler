@@ -7,6 +7,7 @@
 
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/CodeGen.h"
 #include "llvm/Target/TargetMachine.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -70,7 +71,9 @@ int main(int argc, char *argv[]) {
             Labs::translate_to_llvm_ir(module.get(), llvm_context);
         Labs::init_llvm_targets();
         std::unique_ptr<llvm::TargetMachine> tm = Labs::create_target_machine();
-        Labs::optimize_llvm_ir(*llvm_module, tm.get(), 3);
+        Labs::optimize_llvm_ir(*llvm_module, *tm, 3);
+        /*Labs::emit_target_code(*llvm_module, *tm, "temp/relu.s",
+                               llvm::CodeGenFileType::AssemblyFile);*/
         llvm_module->print(llvm::outs(), nullptr);
         //----------------------------
 

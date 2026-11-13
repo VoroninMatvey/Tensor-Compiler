@@ -3,6 +3,7 @@
 #include "llvm/Analysis/CGSCCPassManager.h"
 #include "llvm/Analysis/LoopAnalysisManager.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Verifier.h"
@@ -10,6 +11,7 @@
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/CodeGen.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
@@ -23,9 +25,11 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR//LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
 
+#include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 
 namespace Labs {
 std::unique_ptr<llvm::Module> translate_to_llvm_ir(mlir::ModuleOp module,
@@ -65,12 +69,9 @@ std::unique_ptr<llvm::TargetMachine> create_target_machine() {
         target->createTargetMachine(triple, cpu, features.getString(), options, llvm::Reloc::PIC_));
 }
 
-void optimize_llvm_ir(llvm::Module &module, llvm::TargetMachine *tm, int opt_level) {
-    if (!tm)
-        throw std::runtime_error("TargetMachine pointer is nullptr");
-
-    module.setTargetTriple(tm->getTargetTriple());
-    module.setDataLayout(tm->createDataLayout());
+void optimize_llvm_ir(llvm::Module &module, llvm::TargetMachine &tm, int opt_level) {
+    module.setTargetTriple(tm.getTargetTriple());
+    module.setDataLayout(tm.createDataLayout());
 
     if (opt_level == 0)
         return;
@@ -99,7 +100,7 @@ void optimize_llvm_ir(llvm::Module &module, llvm::TargetMachine *tm, int opt_lev
     pto.LoopVectorization = opt_level > 1;
     pto.SLPVectorization = opt_level > 1;
 
-    llvm::PassBuilder pb(tm, pto);
+    llvm::PassBuilder pb(&tm, pto);
     pb.registerLoopAnalyses(lam);
     pb.registerFunctionAnalyses(fam);
     pb.registerCGSCCAnalyses(cgam);
@@ -111,6 +112,24 @@ void optimize_llvm_ir(llvm::Module &module, llvm::TargetMachine *tm, int opt_lev
 
     if (llvm::verifyModule(module, &llvm::errs()))
         throw std::runtime_error("LLVM Moule was broken after optimization");
+}
+
+void emit_target_code(llvm::Module &module, llvm::TargetMachine &tm,
+                      const std::filesystem::path path, llvm::CodeGenFileType file_type) {
+    std::error_code ec;
+    auto flags = (file_type == llvm::CodeGenFileType::AssemblyFile) ? llvm::sys::fs::OF_Text
+                                                                    : llvm::sys::fs::OF_None;
+
+    llvm::raw_fd_ostream dest(path.string(), ec, flags);
+    if (ec)
+        throw std::runtime_error("Could not open file " + path.string() + ": " + ec.message());
+
+    llvm::legacy::PassManager codegen_pm;
+    if (tm.addPassesToEmitFile(codegen_pm, dest, nullptr, file_type))
+        throw std::runtime_error("TargetMachine can't emit a file of this type");
+
+    codegen_pm.run(module);
+    dest.flush();
 }
 
 } // namespace Labs

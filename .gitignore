@@ -1,4 +1,5 @@
 build
+temp
 third_party/
 .vscode/*
 !.vscode/settings.json
