@@ -27,6 +27,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -51,7 +52,7 @@ void init_llvm_targets() {
     llvm::InitializeNativeTargetAsmPrinter();
 }
 
-std::unique_ptr<llvm::TargetMachine> create_target_machine() {
+std::unique_ptr<llvm::TargetMachine> create_target_machine(int opt_level) {
     llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
 
     std::string error;
@@ -64,9 +65,28 @@ std::unique_ptr<llvm::TargetMachine> create_target_machine() {
     for (const auto &[name, enabled] : llvm::sys::getHostCPUFeatures())
         features.AddFeature(name, enabled);
 
+    llvm::CodeGenOptLevel gen_opt_level;
+    switch (opt_level) {
+    case 0:
+        gen_opt_level = llvm::CodeGenOptLevel::None;
+        break;
+    case 1:
+        gen_opt_level = llvm::CodeGenOptLevel::Less;
+        break;
+    case 2:
+        gen_opt_level = llvm::CodeGenOptLevel::Default;
+        break;
+    case 3:
+        gen_opt_level = llvm::CodeGenOptLevel::Aggressive;
+        break;
+    default:
+        throw std::runtime_error("Invalid optimization level: " + std::to_string(opt_level));
+    }
+
     llvm::TargetOptions options;
     return std::unique_ptr<llvm::TargetMachine>(
-        target->createTargetMachine(triple, cpu, features.getString(), options, llvm::Reloc::PIC_));
+        target->createTargetMachine(triple, cpu, features.getString(), options, llvm::Reloc::PIC_,
+                                    std::nullopt, gen_opt_level));
 }
 
 void optimize_llvm_ir(llvm::Module &module, llvm::TargetMachine &tm, int opt_level) {

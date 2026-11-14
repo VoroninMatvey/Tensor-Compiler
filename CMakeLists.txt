@@ -59,10 +59,14 @@ target_link_libraries(tc_backend PUBLIC
     ${LLVM_CODEGEN_LIBS}
 )
 target_compile_definitions(tc_backend PUBLIC ${LLVM_DEFINITIONS_LIST})
+target_compile_options(tc_backend PRIVATE -fno-rtti)
 
 add_executable(${PROJECT_NAME} ${SRC})
 target_link_libraries(${PROJECT_NAME} PRIVATE tc_backend)
 target_compile_definitions(${PROJECT_NAME} PRIVATE ${PROJECT_ROOT_DEF})
+#LLVM compiled without rtti, cl try to use this
+target_compile_options(${PROJECT_NAME} PRIVATE -fno-rtti)
+
 
 enable_testing()
 add_subdirectory(tests)
