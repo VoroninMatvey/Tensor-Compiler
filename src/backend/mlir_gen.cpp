@@ -15,6 +15,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Operation.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/IR/Types.h"
 #include "mlir/IR/Value.h"
@@ -66,8 +67,8 @@ class MLIRGenImpl final {
         OwningOpRef owner = ModuleOp::create(builder_.getUnknownLoc());
         theModule_ = owner.get();
 
-        func::FuncOp main = create_main(my_graph.inputs, my_graph.outputs);
-        builder_.setInsertionPointToStart(&main.front());
+        func::FuncOp forward = create_forward(my_graph.inputs, my_graph.outputs);
+        builder_.setInsertionPointToStart(&forward.front());
         gen_weights(my_graph.values_);
 
         for (const auto &op_ref : my_graph.ops_) {
@@ -102,8 +103,8 @@ class MLIRGenImpl final {
     }
 
   private:
-    func::FuncOp create_main(const std::vector<Labs::Value *> &inputs,
-                             const std::vector<Labs::Value *> &outputs) {
+    func::FuncOp create_forward(const std::vector<Labs::Value *> &inputs,
+                                const std::vector<Labs::Value *> &outputs) {
         Location location = make_loc("onnx_graph");
 
         SmallVector<Type> argsTypes = get_tensor_types(inputs);
@@ -111,15 +112,17 @@ class MLIRGenImpl final {
 
         FunctionType funcType = builder_.getFunctionType(argsTypes, resTypes);
         builder_.setInsertionPointToStart(theModule_.getBody());
-        func::FuncOp main = func::FuncOp::create(builder_, location, "main", funcType);
+        func::FuncOp forward = func::FuncOp::create(builder_, location, "forward", funcType);
+        // Generate _mlir_ciface_forward wrapper to avoid passing unpacked MemRef fields directly
+        forward->setAttr("llvm.emit_c_interface", builder_.getUnitAttr());
 
-        Block *entry = main.addEntryBlock();
+        Block *entry = forward.addEntryBlock();
 
         assert(inputs.size() == entry->getNumArguments());
         for (std::size_t i = 0; i < inputs.size(); ++i)
             insert_into_value_table(inputs[i], entry->getArgument(i));
 
-        return main;
+        return forward;
     }
 
   private:
@@ -169,7 +172,7 @@ class MLIRGenImpl final {
         ArrayRef<char> bytes(raw_array, value_ptr->raw_data_.size());
         DenseElementsAttr attr = DenseElementsAttr::getFromRawBuffer(type, bytes);
 
-        Location location = make_loc("main");
+        Location location = make_loc("forward");
         Value cnst = arith::ConstantOp::create(builder_, location, attr);
         insert_into_value_table(value_ptr, cnst);
     }

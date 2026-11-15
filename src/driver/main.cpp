@@ -22,7 +22,6 @@
 #include "mlir/IR/OwningOpRef.h"
 
 #include <filesystem>
-#include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -73,6 +72,15 @@ void draw_graph(const Labs::ONNX_Graph &my_graph, const fs::path &file) {
     Labs::render_graphviz(graph_dot, file);
 }
 
+// Only for LLVM and MLIR module printing
+template <typename PrintFn> void emit_text_file(const std::string &path, PrintFn print_fn) {
+    std::error_code ec;
+    llvm::raw_fd_ostream dest(path, ec, llvm::sys::fs::OF_Text);
+    if (ec)
+        throw std::runtime_error("Cannot open output file '" + path + "': " + ec.message());
+    print_fn(dest);
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -106,12 +114,8 @@ int main(int argc, char *argv[]) {
         Labs::lower_to_llvm(*module);
 
         if (emit_action == EmitAction::MLIR) {
-            std::error_code ec;
-            llvm::raw_fd_ostream dest(output_filepath.getValue(), ec, llvm::sys::fs::OF_Text);
-            if (ec)
-                throw std::runtime_error("Cannot open output file " + output_filepath + ": " +
-                                         ec.message());
-            module->print(dest);
+            emit_text_file(output_filepath,
+                           [&module](llvm::raw_ostream &os) { module->print(os); });
             return 0;
         }
 
@@ -122,12 +126,9 @@ int main(int argc, char *argv[]) {
         Labs::optimize_llvm_ir(*llvm_module, *tm, opt_level);
 
         if (emit_action == EmitAction::LLVM) {
-            std::error_code ec;
-            llvm::raw_fd_ostream dest(output_filepath.getValue(), ec, llvm::sys::fs::OF_Text);
-            if (ec)
-                throw std::runtime_error("Cannot open output file " + output_filepath + ": " +
-                                         ec.message());
-            llvm_module->print(dest, nullptr);
+            emit_text_file(output_filepath, [&llvm_module](llvm::raw_ostream &os) {
+                llvm_module->print(os, nullptr);
+            });
             return 0;
         }
 
@@ -135,7 +136,7 @@ int main(int argc, char *argv[]) {
                                                           : llvm::CodeGenFileType::ObjectFile;
         Labs::emit_target_code(*llvm_module, *tm, output_filepath.getValue(), file_type);
     } catch (const std::exception &e) {
-        std::cerr << "Error: " << e.what() << std::endl;
+        llvm::errs() << "Error: " << e.what() << "\n";
         return 1;
     }
 

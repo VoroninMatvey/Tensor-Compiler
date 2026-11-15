@@ -84,6 +84,7 @@ std::unique_ptr<llvm::TargetMachine> create_target_machine(int opt_level) {
     }
 
     llvm::TargetOptions options;
+    options.AllowFPOpFusion = llvm::FPOpFusion::Fast;
     return std::unique_ptr<llvm::TargetMachine>(
         target->createTargetMachine(triple, cpu, features.getString(), options, llvm::Reloc::PIC_,
                                     std::nullopt, gen_opt_level));
