@@ -2,10 +2,16 @@
 
 #include "llvm/Analysis/CGSCCPassManager.h"
 #include "llvm/Analysis/LoopAnalysisManager.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/IR/Type.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/OptimizationLevel.h"
@@ -25,6 +31,7 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR//LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
 
+#include <cstddef>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -33,6 +40,44 @@
 #include <system_error>
 
 namespace Labs {
+
+namespace {
+void emit_packed_wrapper(llvm::Module &module) {
+    llvm::Function *ciface = module.getFunction("_mlir_ciface_forward");
+    if (!ciface)
+        throw std::runtime_error("Function _mlir_ciface_forward not found");
+
+    llvm::LLVMContext &ctx = module.getContext();
+    llvm::Type *ptr_type = llvm::PointerType::getUnqual(ctx);
+    llvm::Type *void_type = llvm::Type::getVoidTy(ctx);
+
+    llvm::SmallVector<llvm::Type *> param_types = {ptr_type};
+    llvm::FunctionType *fn_type = llvm::FunctionType::get(void_type, param_types, false);
+    llvm::Function *packed_fn =
+        llvm::Function::Create(fn_type, llvm::Function::ExternalLinkage, "forward_packed", module);
+
+    llvm::BasicBlock *entry_block = llvm::BasicBlock::Create(ctx, "entry", packed_fn);
+    llvm::IRBuilder<> builder(entry_block);
+    llvm::Value *args_base = packed_fn->getArg(0);
+
+    std::size_t num_ciface_args = ciface->arg_size();
+    llvm::SmallVector<llvm::Value *, 5> call_args;
+    call_args.reserve(num_ciface_args);
+
+    for (std::size_t i = 0; i < num_ciface_args; ++i) {
+        llvm::Value *index_value = builder.getInt64(i);
+        llvm::Value *slot_ptr =
+            builder.CreateInBoundsGEP(ptr_type, args_base, index_value, "slot_ptr");
+
+        llvm::Value *arg_value = builder.CreateLoad(ptr_type, slot_ptr, "arg_value");
+        call_args.push_back(arg_value);
+    }
+
+    builder.CreateCall(ciface, call_args);
+    builder.CreateRetVoid();
+}
+} // namespace
+
 std::unique_ptr<llvm::Module> translate_to_llvm_ir(mlir::ModuleOp module,
                                                    llvm::LLVMContext &llvm_context) {
     mlir::registerBuiltinDialectTranslation(*module.getContext());
@@ -43,6 +88,8 @@ std::unique_ptr<llvm::Module> translate_to_llvm_ir(mlir::ModuleOp module,
     if (!llvm_module)
         llvm::errs() << "Failed to emit LLVM IR\n";
 
+    // Emit universal packed ABI wrapper for mlir_ciface_forward
+    emit_packed_wrapper(*llvm_module);
     return llvm_module;
 }
 
