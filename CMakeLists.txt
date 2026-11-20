@@ -13,6 +13,12 @@ llvm_map_components_to_libnames(LLVM_CODEGEN_LIBS native passes)
 set(SRC src/driver/main.cpp)
 set(PROJECT_ROOT_DEF PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
 
+if(TARGET mlir_c_runner_ulils)
+    set(MLIR_RUNTIME_LIB_DIR "$<TARGET_FILE_DIR:mlir_c_runner_ulils>")
+else()
+    set(MLIR_RUNTIME_LIB_DIR "${LLVM_LIBRARY_DIR}")
+endif()
+
 add_library(tc_frontend STATIC
     src/frontend/importer.cpp
     src/frontend/shape_inference.cpp
@@ -59,6 +65,7 @@ target_link_libraries(tc_backend PUBLIC
     ${LLVM_CODEGEN_LIBS}
 )
 target_compile_definitions(tc_backend PUBLIC ${LLVM_DEFINITIONS_LIST})
+target_compile_definitions(tc_backend PRIVATE MLIR_RUNTIME_LIB_DIR="${MLIR_RUNTIME_LIB_DIR}")
 target_compile_options(tc_backend PRIVATE -fno-rtti)
 
 add_executable(${PROJECT_NAME} ${SRC})

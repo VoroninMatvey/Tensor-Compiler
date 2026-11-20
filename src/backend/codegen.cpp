@@ -1,5 +1,7 @@
 #include "backend/codegen.hpp"
 
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/CGSCCPassManager.h"
 #include "llvm/Analysis/LoopAnalysisManager.h"
 #include "llvm/IR/BasicBlock.h"
@@ -17,7 +19,9 @@
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/CodeGen.h"
+#include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
@@ -183,7 +187,7 @@ void optimize_llvm_ir(llvm::Module &module, llvm::TargetMachine &tm, int opt_lev
 }
 
 void emit_target_code(llvm::Module &module, llvm::TargetMachine &tm,
-                      const std::filesystem::path path, llvm::CodeGenFileType file_type) {
+                      const std::filesystem::path &path, llvm::CodeGenFileType file_type) {
     std::error_code ec;
     auto flags = (file_type == llvm::CodeGenFileType::AssemblyFile) ? llvm::sys::fs::OF_Text
                                                                     : llvm::sys::fs::OF_None;
@@ -198,6 +202,55 @@ void emit_target_code(llvm::Module &module, llvm::TargetMachine &tm,
 
     codegen_pm.run(module);
     dest.flush();
+}
+
+void emit_shared_library(llvm::Module &module, llvm::TargetMachine &tm,
+                         const std::filesystem::path &so_path) {
+    llvm::SmallString<256> temp_obj_buf;
+    // Creates a temporary file from a prefix, a random suffix, and a dot with the second argument
+    std::error_code ec = llvm::sys::fs::createTemporaryFile("tc_model", "o", temp_obj_buf);
+
+    if (ec)
+        throw std::runtime_error("Cannot create temporaary object file:" + ec.message());
+    std::filesystem::path temp_obj_path(temp_obj_buf.str().str());
+
+    struct TempFileGuard {
+        std::filesystem::path path_;
+        ~TempFileGuard() {
+            std::error_code remove_ec;
+            // Overloading with 2 arguments don't throw exceptions!
+            std::filesystem::remove(path_, remove_ec);
+        }
+    } guard{temp_obj_path};
+
+    emit_target_code(module, tm, temp_obj_path, llvm::CodeGenFileType::ObjectFile);
+
+    llvm::ErrorOr<std::string> linker = llvm::sys::findProgramByName("cc");
+    if (!linker)
+        linker = llvm::sys::findProgramByName("gcc");
+    if (!linker)
+        linker = llvm::sys::findProgramByName("clang");
+    if (!linker)
+        throw std::runtime_error("Cannot find a system linker driver (cc, clang, or gcc)");
+
+    // Args in ExecuteAndWait require llvm::ArrauRef<llvm::StringRef> so create std::string values
+    std::string temp_obj_str = temp_obj_path.string();
+    std::string so_path_str = so_path.string();
+    std::string runtime_dir = MLIR_RUNTIME_LIB_DIR;
+    std::string lib_dir_flag = "-L" + runtime_dir;
+    std::string rpath_flag = "-Wl,-rpath," + runtime_dir;
+
+    llvm::SmallVector<llvm::StringRef, 10> args = {
+        *linker, "-shared", temp_obj_str, lib_dir_flag, rpath_flag, "-lmlir_c_runner_utils",
+        "-lm",   "-o",      so_path_str};
+
+    std::string err_msg;
+    int rc = llvm::sys::ExecuteAndWait(*linker, args, std::nullopt, {}, 0, 0, &err_msg);
+
+    if (rc != 0)
+        throw std::runtime_error("Failed to link shared library '" + so_path_str + "' (exit code " +
+                                 std::to_string(rc) + ")" +
+                                 (err_msg.empty() ? "" : ": " + err_msg));
 }
 
 } // namespace Labs

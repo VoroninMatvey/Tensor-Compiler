@@ -30,7 +30,7 @@
 namespace fs = std::filesystem;
 
 namespace {
-enum class EmitAction { MLIR, LLVM, Asm, Obj };
+enum class EmitAction { MLIR, LLVM, Asm, Obj, SharedLib };
 
 llvm::cl::OptionCategory compiler_category("Tensor Compiler Options");
 
@@ -43,7 +43,8 @@ llvm::cl::opt<EmitAction> emit_action(
     llvm::cl::values(clEnumValN(EmitAction::MLIR, "mlir", "Output lowered MLIR (LLVM dialect)"),
                      clEnumValN(EmitAction::LLVM, "llvm", "Output optimized LLVM IR"),
                      clEnumValN(EmitAction::Asm, "asm", "Output target assembly (.s)"),
-                     clEnumValN(EmitAction::Obj, "obj", "Output native object file (.o)")),
+                     clEnumValN(EmitAction::Obj, "obj", "Output native object file (.o)"),
+                     clEnumValN(EmitAction::SharedLib, "so", "Output shared library (.so)")),
     llvm::cl::init(EmitAction::LLVM), llvm::cl::cat(compiler_category));
 
 llvm::cl::opt<int>
@@ -53,7 +54,8 @@ llvm::cl::opt<int>
 
 llvm::cl::opt<std::string> output_filepath(
     "o",
-    llvm::cl::desc("Path to output_file. Mandatory for .o, the rest are optional. Default: stdout"),
+    llvm::cl::desc(
+        "Path to output_file. Mandatory for .o and .so, the rest are optional. Default: stdout"),
     llvm::cl::value_desc("filepath"), llvm::cl::init("-"), llvm::cl::cat(compiler_category));
 
 llvm::cl::opt<bool> draw_dot("draw-dot",
@@ -95,8 +97,11 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    if (emit_action == EmitAction::Obj && output_filepath == "-") {
-        llvm::errs() << "Error: output file (-o <file>) is required when using --emit=obj\n";
+    if ((emit_action == EmitAction::Obj || emit_action == EmitAction::SharedLib) &&
+        output_filepath == "-") {
+        std::string mode = (emit_action == EmitAction::Obj) ? "obj" : "so";
+        llvm::errs() << "Error: output file (-o <file>) is required when using --emit=" << mode
+                     << "\n";
         return 1;
     }
 
@@ -129,6 +134,11 @@ int main(int argc, char *argv[]) {
             emit_text_file(output_filepath, [&llvm_module](llvm::raw_ostream &os) {
                 llvm_module->print(os, nullptr);
             });
+            return 0;
+        }
+
+        if (emit_action == EmitAction::SharedLib) {
+            Labs::emit_shared_library(*llvm_module, *tm, output_filepath.getValue());
             return 0;
         }
 
