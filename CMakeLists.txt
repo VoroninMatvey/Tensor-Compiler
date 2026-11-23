@@ -13,8 +13,8 @@ llvm_map_components_to_libnames(LLVM_CODEGEN_LIBS native passes)
 set(SRC src/driver/main.cpp)
 set(PROJECT_ROOT_DEF PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}")
 
-if(TARGET mlir_c_runner_ulils)
-    set(MLIR_RUNTIME_LIB_DIR "$<TARGET_FILE_DIR:mlir_c_runner_ulils>")
+if(TARGET mlir_c_runner_utils)
+    set(MLIR_RUNTIME_LIB_DIR "$<TARGET_FILE_DIR:mlir_c_runner_utils>")
 else()
     set(MLIR_RUNTIME_LIB_DIR "${LLVM_LIBRARY_DIR}")
 endif()
@@ -74,6 +74,8 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE ${PROJECT_ROOT_DEF})
 #LLVM compiled without rtti, cl try to use this
 target_compile_options(${PROJECT_NAME} PRIVATE -fno-rtti)
 
+add_executable(runner src/driver/runner.cpp)
+target_link_libraries(runner PRIVATE tc_frontend ${CMAKE_DL_LIBS})
 
 enable_testing()
 add_subdirectory(tests)
