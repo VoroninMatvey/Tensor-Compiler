@@ -2,15 +2,17 @@ import os
 import torch
 import torch.nn as nn
 
-out_dir = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "data", "specific_operations")
-)
-os.makedirs(out_dir, exist_ok=True)
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+out_dir = os.path.join(project_root, "examples", "models")
+single_op_dir = os.path.join(out_dir, "specific_operations")
+readme_dir = os.path.join(project_root, "data")
+os.makedirs(single_op_dir, exist_ok=True)
+os.makedirs(readme_dir, exist_ok=True)
 
 
 def dump(model, inputs, name):
     torch.onnx.export(
-        model, inputs, os.path.join(out_dir, name),
+        model, inputs, os.path.join(single_op_dir, name),
         input_names=["input"], output_names=["output"], dynamo=False
     )
     print(name, "done")
@@ -160,7 +162,7 @@ def build_big_graph(path):
     print(os.path.basename(path), f"done ({len(nodes)} nodes)")
 
 
-build_big_graph(os.path.join(out_dir, "universal_graph.onnx"))
+build_big_graph(os.path.join(out_dir, "conv_and_dense.onnx"))
 #-----------------------------------------------------------------------------------------
 def build_readme_graph(path):
     rng = np.random.default_rng(1)
@@ -206,4 +208,4 @@ def build_readme_graph(path):
     print(os.path.basename(path), f"done ({len(nodes)} nodes)")
 
 
-build_readme_graph(os.path.join(out_dir, "readme_md.onnx"))
+build_readme_graph(os.path.join(readme_dir, "readme_md.onnx"))

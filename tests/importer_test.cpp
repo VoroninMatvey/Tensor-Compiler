@@ -10,7 +10,7 @@
 namespace fs = std::filesystem;
 
 fs::path get_path(const std::string &file_name) {
-    fs::path onnx_dir = fs::path(PROJECT_ROOT) / "data" / "specific_operations";
+    fs::path onnx_dir = fs::path(PROJECT_ROOT) / "examples" / "models";
     return onnx_dir / file_name;
 }
 
@@ -20,7 +20,7 @@ TEST(Importer, FileNotFound) {
 }
 
 TEST(ImporterSingleNode, Add) {
-    fs::path add_file = get_path("add.onnx");
+    fs::path add_file = get_path("specific_operations/add.onnx");
     Labs::ONNX_Graph add_graph = Labs::importer(add_file);
 
     EXPECT_EQ(add_graph.ops_.size(), 1);
@@ -32,7 +32,7 @@ TEST(ImporterSingleNode, Add) {
 }
 
 TEST(ImporterSingleNode, Relu) {
-    fs::path relu_file = get_path("relu.onnx");
+    fs::path relu_file = get_path("specific_operations/relu.onnx");
     Labs::ONNX_Graph relu_graph = Labs::importer(relu_file);
 
     EXPECT_EQ(relu_graph.ops_.size(), 1);
@@ -44,7 +44,7 @@ TEST(ImporterSingleNode, Relu) {
 }
 
 TEST(ImporterSingleNode, Mul) {
-    fs::path mul_file = get_path("mul.onnx");
+    fs::path mul_file = get_path("specific_operations/mul.onnx");
     Labs::ONNX_Graph mul_graph = Labs::importer(mul_file);
 
     EXPECT_EQ(mul_graph.ops_.size(), 1);
@@ -56,7 +56,7 @@ TEST(ImporterSingleNode, Mul) {
 }
 
 TEST(ImporterSingleNode, MatMul) {
-    fs::path matmul_file = get_path("matmul.onnx");
+    fs::path matmul_file = get_path("specific_operations/matmul.onnx");
     Labs::ONNX_Graph matmul_graph = Labs::importer(matmul_file);
 
     EXPECT_EQ(matmul_graph.ops_.size(), 1);
@@ -68,7 +68,7 @@ TEST(ImporterSingleNode, MatMul) {
 }
 
 TEST(ImporterSingleNode, Gemm) {
-    fs::path gemm_file = get_path("gemm.onnx");
+    fs::path gemm_file = get_path("specific_operations/gemm.onnx");
     Labs::ONNX_Graph gemm_graph = Labs::importer(gemm_file);
 
     ASSERT_EQ(gemm_graph.ops_.size(), 1);
@@ -95,7 +95,7 @@ TEST(ImporterSingleNode, Gemm) {
 }
 
 TEST(ImporterSingleNode, Conv) {
-    fs::path conv_file = get_path("conv.onnx");
+    fs::path conv_file = get_path("specific_operations/conv.onnx");
     Labs::ONNX_Graph conv_graph = Labs::importer(conv_file);
 
     ASSERT_EQ(conv_graph.ops_.size(), 1);
@@ -121,7 +121,7 @@ TEST(ImporterSingleNode, Conv) {
 }
 
 TEST(ImporterUniversalGraph, Sizes) {
-    fs::path graph_file = get_path("universal_graph.onnx");
+    fs::path graph_file = get_path("conv_and_dense.onnx");
     Labs::ONNX_Graph big_graph = Labs::importer(graph_file);
 
     EXPECT_EQ(big_graph.values_.size(), 52);
@@ -131,7 +131,7 @@ TEST(ImporterUniversalGraph, Sizes) {
 }
 
 TEST(ImporterUniversalGraph, Inputs) {
-    fs::path graph_file = get_path("universal_graph.onnx");
+    fs::path graph_file = get_path("conv_and_dense.onnx");
     Labs::ONNX_Graph big_graph = Labs::importer(graph_file);
     ASSERT_EQ(big_graph.inputs.size(), 2);
 
@@ -149,7 +149,7 @@ TEST(ImporterUniversalGraph, Inputs) {
 }
 
 TEST(ImporterUniversalGraph, Outputs) {
-    fs::path graph_file = get_path("universal_graph.onnx");
+    fs::path graph_file = get_path("conv_and_dense.onnx");
     Labs::ONNX_Graph big_graph = Labs::importer(graph_file);
     ASSERT_EQ(big_graph.outputs.size(), 2);
 
@@ -167,7 +167,7 @@ TEST(ImporterUniversalGraph, Outputs) {
 }
 
 TEST(ImporterUniversalGraph, MultipleConsumers) {
-    fs::path graph_file = get_path("universal_graph.onnx");
+    fs::path graph_file = get_path("conv_and_dense.onnx");
     Labs::ONNX_Graph big_graph = Labs::importer(graph_file);
 
     Labs::Value &scaled2 = *big_graph.name_to_value_.at("scaled2");
@@ -200,7 +200,7 @@ TEST(ImporterUniversalGraph, MultipleConsumers) {
 }
 
 TEST(ImporterUniversalGraph, IntermediateShapes) {
-    fs::path graph_file = get_path("universal_graph.onnx");
+    fs::path graph_file = get_path("conv_and_dense.onnx");
     Labs::ONNX_Graph big_graph = Labs::importer(graph_file);
 
     Labs::Value &conv1 = *big_graph.name_to_value_.at("conv1");
@@ -217,7 +217,7 @@ TEST(ImporterUniversalGraph, IntermediateShapes) {
 }
 
 TEST(ImporterUniversalGraph, Attributes) {
-    fs::path graph_file = get_path("universal_graph.onnx");
+    fs::path graph_file = get_path("conv_and_dense.onnx");
     Labs::ONNX_Graph big_graph = Labs::importer(graph_file);
 
     Labs::Conv *conv_dil_prod =
@@ -233,7 +233,7 @@ TEST(ImporterUniversalGraph, Attributes) {
 }
 
 TEST(ImporterUniversalGraph, Invariants) {
-    fs::path graph_file = get_path("universal_graph.onnx");
+    fs::path graph_file = get_path("conv_and_dense.onnx");
     Labs::ONNX_Graph big_graph = Labs::importer(graph_file);
     std::unordered_map<const Labs::Op *, int> op_seq;
 
