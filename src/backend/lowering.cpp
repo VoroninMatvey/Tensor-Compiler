@@ -9,6 +9,7 @@
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/Arith/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Bufferization/IR/BufferizableOpInterface.h"
+#include "mlir/Dialect/Bufferization/Pipelines/Passes.h"
 #include "mlir/Dialect/Bufferization/Transforms/FuncBufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/Linalg/Passes.h"
@@ -47,8 +48,13 @@ void lower_to_llvm(mlir::ModuleOp module) {
     buf_opts.functionBoundaryTypeConversion =
         mlir::bufferization::LayoutMapOption::IdentityLayoutMap;
 
+    // For deleting temporary buffers
     pm.addPass(mlir::bufferization::createOneShotBufferizePass(buf_opts));
     pm.addPass(mlir::createConvertLinalgToLoopsPass());
+
+    mlir::bufferization::BufferDeallocationPipelineOptions options;
+    mlir::bufferization::buildBufferDeallocationPipeline(pm, options);
+
     pm.addPass(mlir::memref::createExpandStridedMetadataPass());
     pm.addPass(mlir::createLowerAffinePass());
     pm.addPass(mlir::createSCFToControlFlowPass());

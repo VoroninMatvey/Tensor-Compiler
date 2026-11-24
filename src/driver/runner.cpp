@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
 #include <fstream>
@@ -208,6 +209,9 @@ int main(int argc, char **argv) {
         call_forward(forward, input_memrefs, output_descriptors);
         std::vector<Labs::MemRef> outputs = read_outputs(graph, output_descriptors);
         print_outputs(graph, outputs);
+
+        for (auto &output : outputs)
+            std::free(output.allocated());
     } catch (std::exception &excp) {
         std::cerr << excp.what() << "\n";
         return 1;

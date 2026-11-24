@@ -48,6 +48,7 @@ target_link_libraries(tc_backend PUBLIC
     MLIRLinalgDialect
     MLIRPass
     MLIRBufferizationTransforms
+    MLIRBufferizationPipelines
     MLIRTensorInferTypeOpInterfaceImpl
     MLIRArithTransforms
     MLIRLinalgTransforms
