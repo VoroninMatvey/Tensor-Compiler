@@ -162,7 +162,9 @@ def build_big_graph(path):
     print(os.path.basename(path), f"done ({len(nodes)} nodes)")
 
 
-build_big_graph(os.path.join(out_dir, "conv_and_dense.onnx"))
+composite_dir = os.path.join(out_dir, "composite_graphs")
+os.makedirs(composite_dir, exist_ok=True)
+build_big_graph(os.path.join(composite_dir, "conv_and_dense.onnx"))
 #-----------------------------------------------------------------------------------------
 def build_readme_graph(path):
     rng = np.random.default_rng(1)

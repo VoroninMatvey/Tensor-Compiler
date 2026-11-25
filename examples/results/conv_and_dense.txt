@@ -1,0 +1,4 @@
+=== conv_and_dense ===
+OK out (1, 4, 8, 8): 256 values, max_abs_error(finite)=0.4375
+OK context_out (8, 4): 32 values, max_abs_error(finite)=6.10352e-05
+2/2 outputs matched (rtol=0.0001, atol=0.001)

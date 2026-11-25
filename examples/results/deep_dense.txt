@@ -1,0 +1,3 @@
+=== deep_dense ===
+OK summary (1, 8): 8 values, max_abs_error(finite)=1.49012e-07
+1/1 outputs matched (rtol=0.0001, atol=0.001)

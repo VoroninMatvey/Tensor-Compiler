@@ -121,7 +121,7 @@ TEST(ImporterSingleNode, Conv) {
 }
 
 TEST(ImporterUniversalGraph, Sizes) {
-    fs::path graph_file = get_path("conv_and_dense.onnx");
+    fs::path graph_file = get_path("composite_graphs/conv_and_dense.onnx");
     Labs::ONNX_Graph big_graph = Labs::importer(graph_file);
 
     EXPECT_EQ(big_graph.values_.size(), 52);
@@ -131,7 +131,7 @@ TEST(ImporterUniversalGraph, Sizes) {
 }
 
 TEST(ImporterUniversalGraph, Inputs) {
-    fs::path graph_file = get_path("conv_and_dense.onnx");
+    fs::path graph_file = get_path("composite_graphs/conv_and_dense.onnx");
     Labs::ONNX_Graph big_graph = Labs::importer(graph_file);
     ASSERT_EQ(big_graph.inputs.size(), 2);
 
@@ -149,7 +149,7 @@ TEST(ImporterUniversalGraph, Inputs) {
 }
 
 TEST(ImporterUniversalGraph, Outputs) {
-    fs::path graph_file = get_path("conv_and_dense.onnx");
+    fs::path graph_file = get_path("composite_graphs/conv_and_dense.onnx");
     Labs::ONNX_Graph big_graph = Labs::importer(graph_file);
     ASSERT_EQ(big_graph.outputs.size(), 2);
 
@@ -167,7 +167,7 @@ TEST(ImporterUniversalGraph, Outputs) {
 }
 
 TEST(ImporterUniversalGraph, MultipleConsumers) {
-    fs::path graph_file = get_path("conv_and_dense.onnx");
+    fs::path graph_file = get_path("composite_graphs/conv_and_dense.onnx");
     Labs::ONNX_Graph big_graph = Labs::importer(graph_file);
 
     Labs::Value &scaled2 = *big_graph.name_to_value_.at("scaled2");
@@ -200,7 +200,7 @@ TEST(ImporterUniversalGraph, MultipleConsumers) {
 }
 
 TEST(ImporterUniversalGraph, IntermediateShapes) {
-    fs::path graph_file = get_path("conv_and_dense.onnx");
+    fs::path graph_file = get_path("composite_graphs/conv_and_dense.onnx");
     Labs::ONNX_Graph big_graph = Labs::importer(graph_file);
 
     Labs::Value &conv1 = *big_graph.name_to_value_.at("conv1");
@@ -217,7 +217,7 @@ TEST(ImporterUniversalGraph, IntermediateShapes) {
 }
 
 TEST(ImporterUniversalGraph, Attributes) {
-    fs::path graph_file = get_path("conv_and_dense.onnx");
+    fs::path graph_file = get_path("composite_graphs/conv_and_dense.onnx");
     Labs::ONNX_Graph big_graph = Labs::importer(graph_file);
 
     Labs::Conv *conv_dil_prod =
@@ -233,7 +233,7 @@ TEST(ImporterUniversalGraph, Attributes) {
 }
 
 TEST(ImporterUniversalGraph, Invariants) {
-    fs::path graph_file = get_path("conv_and_dense.onnx");
+    fs::path graph_file = get_path("composite_graphs/conv_and_dense.onnx");
     Labs::ONNX_Graph big_graph = Labs::importer(graph_file);
     std::unordered_map<const Labs::Op *, int> op_seq;
 

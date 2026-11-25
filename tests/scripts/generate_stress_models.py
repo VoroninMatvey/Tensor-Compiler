@@ -1,9 +1,10 @@
-"""Generate reproducible ONNX graphs and matching runner stdin. Run from the project root."""
+"""Generate reproducible ONNX graphs and matching runner stdin."""
 import argparse
 import math
 from pathlib import Path
 import subprocess
 import sys
+from tempfile import mkdtemp
 import time
 
 import numpy as np
@@ -159,8 +160,11 @@ def run_case(case, build, compare_script):
 
 
 def main():
+    scripts_dir = Path(__file__).resolve().parent
+    project_root = scripts_dir.parent.parent
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", type=Path, default=Path("temp/generated"))
+    parser.add_argument("--out", type=Path,
+                        help="Output directory (default: a new temp/generated/run.* in the project)")
     parser.add_argument("--family", choices=("all", *FAMILIES), default="all")
     parser.add_argument("--seed", type=int, default=2026, help="Seed of the first model")
     parser.add_argument("--count", type=int, default=12, help="Total number of models")
@@ -168,29 +172,38 @@ def main():
     parser.add_argument("--size", type=int, default=12, help="Base spatial or matrix dimension")
     parser.add_argument("--channels", type=int, help="Feature channels for conv and mixed graphs")
     parser.add_argument("--run", action="store_true", help="Compile, run and compare every case")
-    parser.add_argument("--build", type=Path, default=Path("build"), help="Directory with runner and tensor_compiler")
+    parser.add_argument("--build", type=Path, default=project_root / "build",
+                        help="Directory with runner and tensor_compiler (default: project build/)")
     args = parser.parse_args()
     if args.seed < 0 or min(args.count, args.blocks, args.size) < 1:
         parser.error("seed must be non-negative and count, blocks and size must be positive")
     if args.channels is not None and args.channels < 1:
         parser.error("channels must be positive")
-    compare_script = Path(__file__).with_name("compare_runner_outputs.py")
+    compare_script = scripts_dir / "compare_runner_outputs.py"
+    build = args.build.resolve()
     if args.run:
-        for path in (args.build / "tensor_compiler", args.build / "runner", compare_script):
+        for path in (build / "tensor_compiler", build / "runner", compare_script):
             if not path.is_file():
                 parser.error(f"Missing file for --run: {path}")
-    args.out.mkdir(parents=True, exist_ok=True)
+    if args.out is None:
+        runs_dir = project_root / "temp" / "generated"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        out = Path(mkdtemp(prefix="run.", dir=runs_dir))
+    else:
+        out = args.out.resolve()
+        out.mkdir(parents=True, exist_ok=True)
+    print(f"Output directory: {out}", flush=True)
     failed = []
     for i in range(args.count):
         family = FAMILIES[i % len(FAMILIES)] if args.family == "all" else args.family
         seed = args.seed + i
-        case = args.out / f"{family}_s{seed}_b{args.blocks}_n{args.size}"
+        case = out / f"{family}_s{seed}_b{args.blocks}_n{args.size}"
         if family in ("conv", "mixed") and args.channels is not None:
             case = case.with_name(f"{case.name}_c{args.channels}")
         generate(case, family, seed, args.size, args.blocks, args.channels)
         if args.run:
             try:
-                run_case(case, args.build.resolve(), compare_script)
+                run_case(case, build, compare_script)
             except (subprocess.CalledProcessError, OSError) as error:
                 print(f"FAIL {case.name}: {error}", file=sys.stderr, flush=True)
                 failed.append(case.name)
