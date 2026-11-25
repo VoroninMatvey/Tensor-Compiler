@@ -6,3 +6,5 @@ third_party/
 data/dot_models
 Testing/
 *:Zone.Identifier
+
+__pycache__/
